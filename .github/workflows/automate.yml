@@ -1,0 +1,60 @@
+name: DarkHistoryMind — Auto Video Pipeline
+
+on:
+  schedule:
+    # Every 2 days at 2:30 AM UTC = 8:00 AM IST
+    # Video will be scheduled to post at 8 PM IST same day
+    - cron: '30 2 */2 * *'
+  # Manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  produce-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ffmpeg fonts-dejavu -q
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright fonts
+        run: |
+          mkdir -p /usr/share/fonts/truetype/custom
+          wget -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf
+          wget -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf
+          wget -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-Regular.ttf" -O /usr/share/fonts/truetype/custom/CormorantGaramond-Regular.ttf
+          fc-cache -fv
+
+      - name: Run pipeline
+        env:
+          GROQ_KEY:          ${{ secrets.GROQ_KEY }}
+          PEXELS_KEY:        ${{ secrets.PEXELS_KEY }}
+          PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
+          HF_TOKEN:          ${{ secrets.HF_TOKEN }}
+          GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
+          GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
+          GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
+          SHEET_ID:          ${{ secrets.SHEET_ID }}
+        run: python pipeline.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: pipeline-logs
+          path: pipeline.log
