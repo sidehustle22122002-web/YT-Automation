@@ -32,14 +32,16 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright fonts
+      - name: Install fonts
         run: |
+          sudo apt-get install -y fonts-urw-base35 fontconfig -q
           mkdir -p /usr/share/fonts/truetype/custom
-          wget -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf
-          wget -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf
-          wget -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-Regular.ttf" -O /usr/share/fonts/truetype/custom/CormorantGaramond-Regular.ttf
-          fc-cache -fv
-
+          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf || true
+          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Regular.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf || true
+          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-Regular.ttf" -O /usr/share/fonts/truetype/custom/CormorantGaramond-Regular.ttf || true
+          fc-cache -fv || true
+          echo "✅ Fonts done"
+          
       - name: Run pipeline
         env:
           GROQ_KEY:          ${{ secrets.GROQ_KEY }}
