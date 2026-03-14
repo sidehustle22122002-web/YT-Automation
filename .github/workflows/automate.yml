@@ -2,10 +2,7 @@ name: DarkHistoryMind — Auto Video Pipeline
 
 on:
   schedule:
-    # Every 2 days at 2:30 AM UTC = 8:00 AM IST
-    # Video will be scheduled to post at 8 PM IST same day
     - cron: '30 2 */2 * *'
-  # Manual trigger for testing
   workflow_dispatch:
 
 jobs:
@@ -25,23 +22,24 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y ffmpeg fonts-dejavu -q
+          sudo apt-get install -y ffmpeg fontconfig -q
+          echo "✅ System deps done"
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          echo "✅ Python deps done"
 
       - name: Install fonts
         run: |
-          sudo apt-get install -y fonts-urw-base35 fontconfig -q
           mkdir -p /usr/share/fonts/truetype/custom
           wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf || true
           wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Regular.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf || true
           wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-Regular.ttf" -O /usr/share/fonts/truetype/custom/CormorantGaramond-Regular.ttf || true
           fc-cache -fv || true
           echo "✅ Fonts done"
-          
+
       - name: Run pipeline
         env:
           GROQ_KEY:          ${{ secrets.GROQ_KEY }}
@@ -60,3 +58,4 @@ jobs:
         with:
           name: pipeline-logs
           path: pipeline.log
+          if-no-files-found: ignore
