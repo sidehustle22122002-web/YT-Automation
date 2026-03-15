@@ -1,0 +1,94 @@
+name: DarkHistoryMind Shorts Pipeline
+
+on:
+  # Auto-trigger after long-form pipeline succeeds
+  workflow_run:
+    workflows: ["DarkHistoryMind Pipeline"]
+    types: [completed]
+
+  # Manual trigger — set test_mode to true for review before going live
+  workflow_dispatch:
+    inputs:
+      long_video_topic:
+        description: "Topic of the long-form video (leave blank to auto-read)"
+        required: false
+        default: ""
+      test_mode:
+        description: "TEST MODE — 1 short, private upload, no schedule, saves artifact"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  run-shorts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    env:
+      GROQ_KEY:          ${{ secrets.GROQ_KEY }}
+      PEXELS_KEY:        ${{ secrets.PEXELS_KEY }}
+      PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
+      GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
+      GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
+      SHEET_ID:          ${{ secrets.SHEET_ID }}
+      LONG_VIDEO_TOPIC:  ${{ github.event.inputs.long_video_topic }}
+      TEST_MODE:         ${{ github.event.inputs.test_mode || 'false' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
+            fontconfig fonts-dejavu-core fonts-liberation
+
+      - name: Install Shorts fonts (Montserrat + Anton)
+        run: |
+          set +e
+          sudo apt-get install -y fonts-montserrat 2>/dev/null
+          FONT_DIR="/usr/share/fonts/truetype/custom"
+          sudo mkdir -p "$FONT_DIR"
+          sudo curl -fsSL \
+            "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-ExtraBold.ttf" \
+            -o "$FONT_DIR/Montserrat-ExtraBold.ttf" 2>/dev/null || true
+          sudo curl -fsSL \
+            "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf" \
+            -o "$FONT_DIR/Anton-Regular.ttf" 2>/dev/null || true
+          sudo fc-cache -fv 2>/dev/null || true
+          set -e
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Shorts Pipeline
+        run: python shorts_pipeline.py
+
+      # ── Upload the test video as downloadable artifact (TEST MODE only) ──
+      - name: Upload test video artifact
+        if: ${{ github.event.inputs.test_mode == 'true' }}
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: test-short-${{ github.run_number }}
+          path: "short_*.mp4"
+          retention-days: 3
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: shorts-log-${{ github.run_number }}
+          path: shorts_pipeline.log
+          retention-days: 7
