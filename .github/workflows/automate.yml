@@ -2,7 +2,7 @@ name: DarkHistoryMind Pipeline
 
 on:
   schedule:
-    - cron: "30 14 */2 * *"   # Every 2 days at 14:30 UTC (8 PM IST)
+    - cron: "30 14 1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31 * *"  # Every 2 days (odd dates) at 8 PM IST
   workflow_dispatch:           # Manual trigger
 
 jobs:
