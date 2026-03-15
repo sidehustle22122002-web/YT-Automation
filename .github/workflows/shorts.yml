@@ -75,7 +75,7 @@ jobs:
           cache: pip
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements_shorts.txt
 
       - name: Run Shorts Pipeline
         run: python shorts_pipeline.py
