@@ -33,8 +33,6 @@ CHANNEL_NAME      = "DarkHistoryMind"
 # ── VIDEO SPECS ───────────────────────────────────────
 SW, SH       = 1080, 1920
 FPS          = 30
-MIN_DUR      = 30.0
-MAX_DUR      = 40.0
 
 # ── CAPTION STYLE ─────────────────────────────────────
 CAPTION_SIZE = 100
@@ -102,30 +100,30 @@ def generate_script(topic):
         prompt = f"""Write a viral YouTube Shorts dark history script.
 Topic: {topic}
 
-TARGET: 90-110 words total = 30-40 seconds at natural TTS pace (~2.5 words/sec).
+WORD COUNT REQUIREMENT: full_script MUST be exactly 100 words. Not 60. Not 80. Exactly 100.
+At TTS rate -18% (slow dramatic pace), 100 words = 35-38 seconds. This is non-negotiable.
 
-Structure with exact word counts:
-HOOK (8-10 words): ONE brutal shocking statement. No questions. Present tense.
-FACT1 (18-20 words): First dark shocking fact. Full sentences.
-FACT2 (18-20 words): Second darker fact. Escalate tension.
-STORY (25-30 words): The shocking core truth. Build intensity.
-CONCLUSION (18-20 words): Haunting final revelation. End with a statement.
+Structure:
+HOOK (10 words): ONE brutal shocking statement. No questions. Present tense.
+FACT1 (20 words): First dark shocking fact. Two sentences.
+FACT2 (20 words): Second darker fact. Escalate tension. Two sentences.
+STORY (30 words): The shocking core truth. Three sentences. Most intense part.
+CONCLUSION (20 words): Haunting final revelation. Two sentences. End with a statement.
 
-CRITICAL RULES:
-- COUNT the words in full_script. It MUST be 90-110 words. Recount before outputting.
+RULES:
+- Count every word in full_script before outputting. Must equal 100.
 - Cold documentary tone. TRUE historical facts only.
 - Never start with Welcome, Today, In this video, Subscribe.
 - Short punchy sentences. No filler words.
-- Each sentence must be shocking and specific.
 
 Return ONLY valid JSON:
-{{"hook":"","fact1":"","fact2":"","story":"","conclusion":"","full_script":"complete 90-110 word script"}}"""
+{{"hook":"","fact1":"","fact2":"","story":"","conclusion":"","full_script":"exactly 100 word script"}}"""
 
         r    = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.85,
-            max_tokens=700
+            max_tokens=800
         )
         text = r.choices[0].message.content.strip()
         text = text.replace("```json", "").replace("```", "").strip()
@@ -133,31 +131,33 @@ Return ONLY valid JSON:
         wc   = len(data.get("full_script", "").split())
         log.info(f"Script: {wc} words | Hook: {data.get('hook','')}")
 
-        # If word count too low, retry once with stricter prompt
-        if wc < 80:
-            log.warning(f"Script too short ({wc} words) — retrying...")
-            retry_prompt = f"""The previous script was too short ({wc} words).
-Rewrite it for topic: {topic}
-REQUIREMENT: full_script MUST be exactly 95-110 words. Count every word.
-Same structure: HOOK + FACT1 + FACT2 + STORY + CONCLUSION.
+        # Retry if under 85 words — keep retrying until we get enough
+        attempts = 0
+        while wc < 85 and attempts < 3:
+            attempts += 1
+            log.warning(f"Script too short ({wc} words) — retry {attempts}...")
+            retry_prompt = f"""Previous script was only {wc} words. NOT ACCEPTABLE.
+Topic: {topic}
+HARD REQUIREMENT: full_script MUST be 100 words. Count every single word.
+Structure: HOOK(10) + FACT1(20) + FACT2(20) + STORY(30) + CONCLUSION(20) = 100 words total.
 Return ONLY valid JSON:
-{{"hook":"","fact1":"","fact2":"","story":"","conclusion":"","full_script":"95-110 word script"}}"""
-            r2   = client.chat.completions.create(
+{{"hook":"","fact1":"","fact2":"","story":"","conclusion":"","full_script":"100 word script"}}"""
+            r2    = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": retry_prompt}],
-                temperature=0.85,
-                max_tokens=700
+                temperature=0.9,
+                max_tokens=800
             )
             text2 = r2.choices[0].message.content.strip()
             text2 = text2.replace("```json","").replace("```","").strip()
             data2 = json.loads(text2[text2.find('{'):text2.rfind('}')+1])
             wc2   = len(data2.get("full_script","").split())
-            log.info(f"Retry script: {wc2} words")
+            log.info(f"Retry {attempts}: {wc2} words")
             if wc2 > wc:
                 data = data2
                 wc   = wc2
 
-        log.info(f"Final script: {wc} words (~{wc/2.5:.0f}s)")
+        log.info(f"Final script: {wc} words")
         return data
     except Exception as e:
         log.error(f"Script failed: {e}")
@@ -179,8 +179,8 @@ def generate_voice(script_data):
             communicate = edge_tts.Communicate(
                 full_script,
                 voice="en-GB-ThomasNeural",
-                rate="+0%",
-                pitch="-8Hz"
+                rate="-18%",   # slower dramatic pace — matches long-form
+                pitch="-10Hz"
             )
             await communicate.save("shorts_raw_voice.mp3")
 
@@ -1076,8 +1076,9 @@ def run_short(topic, num, offset):
         log.error("ABORT: shorts_voice.wav missing")
         return None
     dur = get_voice_duration()
-    dur = max(MIN_DUR, min(MAX_DUR, dur))
-    log.info(f"Voice OK: {dur:.2f}s")
+    log.info(f"Voice duration: {dur:.2f}s")
+    # Video duration = voiceover duration exactly (same as long-form)
+    # No clamping — the script word count controls the duration
 
     # 3. Captions from Whisper
     captions = build_captions(script, dur)
