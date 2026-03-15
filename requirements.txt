@@ -1,33 +1,19 @@
-# ── DarkHistoryMind Pipeline Dependencies ─────────────────────
-
-# AI / LLM
+# ── DarkHistoryMind Long-Form Pipeline Dependencies ───
 groq
-
-# Web / API
 requests
 wikipedia
-
-# Video
-moviepy
+moviepy==1.0.3
 opencv-python-headless
-
-# Image
 Pillow
 easyocr
-
-# Audio
 edge-tts
 nest-asyncio
 pydub
 pyloudnorm
 faster-whisper
-
-# Google / YouTube
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
 gspread
 oauth2client
-
-# Core
 numpy
