@@ -213,7 +213,10 @@ def generate_voice(script_data):
 
 def get_voice_duration():
     try:
-        from moviepy.editor import AudioFileClip
+        try:
+            from moviepy.editor import AudioFileClip
+        except ImportError:
+            from moviepy import AudioFileClip
         c = AudioFileClip("shorts_voice.wav")
         d = c.duration
         c.close()
@@ -876,18 +879,34 @@ Title example: "THIS Empire Vanished In ONE Night 💀 #Shorts" """
 # ═══════════════════════════════════════════════════════
 # SECTION 10 — UPLOAD
 # ═══════════════════════════════════════════════════════
-PEAK_UTC = [(1,30),(7,30),(13,30),(14,30)]
+# US-primary posting schedule (EST = UTC-5, IST = UTC+5:30)
+# Short 1 (gap day):   8:00 AM EST  = 13:00 UTC = 6:30 PM IST
+# Short 2 (gap day):   6:00 PM EST  = 23:00 UTC = 4:30 AM IST+1
+# Short 3 (upload day): 8:00 AM EST = 13:00 UTC = 6:30 PM IST (teaser)
+# ── 3-SHORT SCHEDULE (US primary audience) ────────────
+# Short #1 — Upload day, 12:00 AM IST = 18:30 UTC
+#             = 1:30 PM EST / 10:30 AM PST (upload day afternoon US)
+# Short #2 — Gap day morning, 16:00 UTC
+#             = 11:00 AM EST / 8:00 AM PST
+# Short #3 — Gap day evening, 01:00 UTC (+2 days)
+#             = 8:00 PM EST / 5:00 PM PST
 
-def get_schedule(offset=0):
-    now   = datetime.datetime.utcnow()
-    cands = []
-    for h, m in PEAK_UTC:
-        t = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if t <= now:
-            t += datetime.timedelta(days=1)
-        cands.append(t)
-    cands.sort()
-    return cands[offset % len(cands)].strftime("%Y-%m-%dT%H:%M:%S.000Z")
+SLOT_SCHEDULE = {
+    0: {"hour": 18, "minute": 30, "days_ahead": 0,  "label": "12:00 AM IST / 1:30 PM EST"},
+    1: {"hour": 16, "minute":  0, "days_ahead": 1,  "label": "11:00 AM EST / 8:00 AM PST"},
+    2: {"hour":  1, "minute":  0, "days_ahead": 2,  "label": "8:00 PM EST / 5:00 PM PST"},
+}
+
+def get_schedule(slot):
+    now  = datetime.datetime.utcnow()
+    cfg  = SLOT_SCHEDULE.get(slot, SLOT_SCHEDULE[0])
+    t    = now.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
+    t   += datetime.timedelta(days=cfg["days_ahead"])
+    if t <= now:
+        t += datetime.timedelta(days=1)
+    ist  = t + datetime.timedelta(hours=5, minutes=30)
+    log.info(f"Slot {slot} → {t.strftime('%Y-%m-%d %H:%M')} UTC | {ist.strftime('%I:%M %p')} IST | {cfg['label']}")
+    return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def get_yt():
     from googleapiclient.discovery import build
@@ -929,7 +948,6 @@ def upload(video_file, seo, thumbnail, offset=0):
         }
     else:
         pub  = get_schedule(offset)
-        log.info(f"Scheduling: {pub}")
         body = {
             "snippet": {
                 "title":           seo["title"],
@@ -1008,13 +1026,16 @@ def setup_auth():
 def update_sheet(topic, url, title, num):
     try:
         import gspread
-        from google.oauth2.service_account import ServiceAccountCredentials
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            "client_secrets.json",
-            ["https://spreadsheets.google.com/feeds",
-             "https://www.googleapis.com/auth/drive"]
+        from google.oauth2.service_account import Credentials
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_file(
+            "client_secrets.json", scopes=scope
         )
-        gc = gspread.authorize(creds)
+        gc = gspread.Client(auth=creds)
+        gc.session = requests.Session()
         sh = gc.open_by_key(SHEET_ID)
         try:
             ws = sh.get_worksheet(1)
@@ -1030,29 +1051,47 @@ def update_sheet(topic, url, title, num):
     except Exception as e:
         log.warning(f"Sheet: {e}")
 
-def get_related_topics(long_topic, n=2):
+def get_related_topics(long_topic, n=3):
     try:
         from groq import Groq
         c      = Groq(api_key=GROQ_KEY)
-        prompt = f"""Main long-form video: {long_topic}
-Generate {n} related Shorts topics — different dark angles of same topic.
-Each: shocking, specific, 5-10 words. No repeats.
-Return ONLY JSON array: ["Topic 1","Topic 2"]"""
+        prompt = f"""The long-form video published is about: {long_topic}
+
+Generate exactly {n} YouTube Shorts topics — all related to this SAME topic.
+Each must be a different dark angle, sub-fact, or shocking detail from this topic.
+They must NOT be teasers or previews — they are standalone dark history facts.
+
+Rules:
+- Each topic: 5-10 words, shocking, specific
+- All {n} must be different angles
+- All must relate directly to: {long_topic}
+
+Return ONLY a JSON array of exactly {n} strings:
+["Topic 1", "Topic 2", "Topic 3"]"""
+
         r    = c.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role":"user","content":prompt}],
             temperature=0.9,
-            max_tokens=150
+            max_tokens=200
         )
         text  = r.choices[0].message.content.strip()
         text  = text.replace("```json","").replace("```","").strip()
         tops  = json.loads(text[text.find('['):text.rfind(']')+1])
-        log.info(f"Topics: {tops}")
+        # Ensure we always have exactly n topics
+        while len(tops) < n:
+            ct = clean_topic(long_topic)
+            tops.append(f"The Hidden Truth About {ct}")
+        log.info(f"Short topics: {tops[:n]}")
         return tops[:n]
     except Exception as e:
-        log.warning(f"Topics: {e}")
+        log.warning(f"Topics failed: {e}")
         ct = clean_topic(long_topic)
-        return [f"The Secret Death of {ct}", f"The Dark Side of {ct}"]
+        return [
+            f"The Dark Secret of {ct}",
+            f"The Brutal Reality of {ct}",
+            f"The Hidden Truth About {ct}",
+        ][:n]
 
 # ═══════════════════════════════════════════════════════
 # MAIN
@@ -1124,32 +1163,57 @@ def run_short(topic, num, offset):
 
     return url
 
+# ── RUN MODE ──────────────────────────────────────────
+# SHORTS_MODE env var controls what runs:
+#   "all"      — triggered after long-form: produces all 3 shorts at once
+#                Short #1 → slot 0 (12 AM IST / 1:30 PM EST upload day)
+#                Short #2 → slot 1 (11 AM EST gap day morning)
+#                Short #3 → slot 2 (8 PM EST gap day evening)
+#   "test"     — 1 short, private, no schedule
+RUN_MODE = os.environ.get("SHORTS_MODE", "all")
+
 def main():
-    log.info("="*50)
+    log.info("="*55)
     log.info("DarkHistoryMind SHORTS Pipeline v3")
-    if TEST_MODE:
-        log.info("*** TEST MODE: 1 short, private, no schedule ***")
-    log.info("="*50)
+    log.info(f"Mode: {RUN_MODE} | Test: {TEST_MODE}")
+    log.info("="*55)
 
     download_fonts()
     setup_auth()
     os.makedirs("shorts_assets", exist_ok=True)
 
     long_topic = LONG_VIDEO_TOPIC.strip() or "The Dark Truth About The Roman Empire"
-    log.info(f"Topic base: {long_topic}")
+    log.info(f"Long-form topic: {long_topic}")
 
-    n_shorts = 1 if TEST_MODE else 2
-    topics   = get_related_topics(long_topic, n=n_shorts)
+    if TEST_MODE:
+        # Test mode — 1 short only, private, no schedule
+        n_shorts = 1
+        slots    = [0]
+        log.info("TEST: 1 short, private, no schedule")
+    else:
+        # Production — all 3 shorts triggered after long-form publishes
+        # Short #1: upload day 12 AM IST (slot 0)
+        # Short #2: gap day 11 AM EST (slot 1)
+        # Short #3: gap day 8 PM EST (slot 2)
+        n_shorts = 3
+        slots    = [0, 1, 2]
+        log.info("PRODUCTION: 3 shorts — upload day AM + gap day AM + gap day PM")
+
+    # All shorts related to the long-form topic just published
+    topics = get_related_topics(long_topic, n=n_shorts)
 
     results = []
-    for i, topic in enumerate(topics, 1):
-        url = run_short(topic, num=i, offset=i-1)
+    for i, (topic, slot) in enumerate(zip(topics, slots), 1):
+        log.info(f"\n{'='*40}")
+        log.info(f"SHORT #{i} of {n_shorts} — Slot {slot} — {SLOT_SCHEDULE[slot]['label']}")
+        log.info(f"{'='*40}")
+        url = run_short(topic, num=i, offset=slot)
         results.append(url)
         if i < len(topics):
-            time.sleep(10)
+            time.sleep(15)
 
-    log.info("="*50)
-    log.info("DONE")
+    log.info("="*55)
+    log.info("SHORTS COMPLETE")
     for i, url in enumerate(results, 1):
         log.info(f"Short #{i}: {url or 'FAILED'}")
     if TEST_MODE:
