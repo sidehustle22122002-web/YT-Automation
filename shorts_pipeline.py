@@ -27,7 +27,6 @@ GDRIVE_TOKEN_ID   = os.environ["GDRIVE_TOKEN_ID"]
 GDRIVE_MUSIC_ID   = os.environ.get("GDRIVE_MUSIC_ID", "")
 SHEET_ID          = os.environ["SHEET_ID"]
 LONG_VIDEO_TOPIC  = os.environ.get("LONG_VIDEO_TOPIC", "")
-TEST_MODE         = os.environ.get("TEST_MODE", "false").lower() == "true"
 CHANNEL_NAME      = "DarkHistoryMind"
 
 # ── VIDEO SPECS ───────────────────────────────────────
@@ -931,37 +930,21 @@ def upload(video_file, seo, thumbnail, offset=0):
     if not yt:
         return None, None
 
-    if TEST_MODE:
-        log.info("TEST MODE — Private, no schedule")
-        body = {
-            "snippet": {
-                "title":           f"[TEST] {seo['title']}",
-                "description":     seo["description"],
-                "tags":            seo.get("tags", []),
-                "categoryId":      "27",
-                "defaultLanguage": "en",
-            },
-            "status": {
-                "privacyStatus":          "private",
-                "selfDeclaredMadeForKids": False,
-            }
+    pub  = get_schedule(offset)
+    body = {
+        "snippet": {
+            "title":           seo["title"],
+            "description":     seo["description"],
+            "tags":            seo.get("tags", []),
+            "categoryId":      "27",
+            "defaultLanguage": "en",
+        },
+        "status": {
+            "privacyStatus":          "private",
+            "publishAt":              pub,
+            "selfDeclaredMadeForKids": False,
         }
-    else:
-        pub  = get_schedule(offset)
-        body = {
-            "snippet": {
-                "title":           seo["title"],
-                "description":     seo["description"],
-                "tags":            seo.get("tags", []),
-                "categoryId":      "27",
-                "defaultLanguage": "en",
-            },
-            "status": {
-                "privacyStatus":          "private",
-                "publishAt":              pub,
-                "selfDeclaredMadeForKids": False,
-            }
-        }
+    }
 
     try:
         media   = MediaFileUpload(
@@ -1148,13 +1131,7 @@ def run_short(topic, num, offset):
         log.info(f"Short #{num} done: {url}")
 
     # Cleanup
-    to_clean = [
-        "shorts_raw_voice.mp3", "shorts_voice.wav",
-        "shorts_thumbnail.jpg"
-    ]
-    if not TEST_MODE:
-        to_clean.append(out)
-    for f in to_clean:
+    for f in [out, "shorts_raw_voice.mp3", "shorts_voice.wav", "shorts_thumbnail.jpg"]:
         if os.path.exists(f):
             os.remove(f)
     for f in os.listdir("shorts_assets"):
@@ -1170,12 +1147,10 @@ def run_short(topic, num, offset):
 #                Short #2 → slot 1 (11 AM EST gap day morning)
 #                Short #3 → slot 2 (8 PM EST gap day evening)
 #   "test"     — 1 short, private, no schedule
-RUN_MODE = os.environ.get("SHORTS_MODE", "all")
 
 def main():
     log.info("="*55)
     log.info("DarkHistoryMind SHORTS Pipeline v3")
-    log.info(f"Mode: {RUN_MODE} | Test: {TEST_MODE}")
     log.info("="*55)
 
     download_fonts()
@@ -1185,39 +1160,27 @@ def main():
     long_topic = LONG_VIDEO_TOPIC.strip() or "The Dark Truth About The Roman Empire"
     log.info(f"Long-form topic: {long_topic}")
 
-    if TEST_MODE:
-        # Test mode — 1 short only, private, no schedule
-        n_shorts = 1
-        slots    = [0]
-        log.info("TEST: 1 short, private, no schedule")
-    else:
-        # Production — all 3 shorts triggered after long-form publishes
-        # Short #1: upload day 12 AM IST (slot 0)
-        # Short #2: gap day 11 AM EST (slot 1)
-        # Short #3: gap day 8 PM EST (slot 2)
-        n_shorts = 3
-        slots    = [0, 1, 2]
-        log.info("PRODUCTION: 3 shorts — upload day AM + gap day AM + gap day PM")
-
-    # All shorts related to the long-form topic just published
-    topics = get_related_topics(long_topic, n=n_shorts)
+    # 3 shorts per cycle — all related to the long-form topic
+    # Short #1: upload day  → 12:00 AM IST / 1:30 PM EST
+    # Short #2: gap day AM  → 11:00 AM EST / 8:00 AM PST
+    # Short #3: gap day PM  → 8:00 PM EST  / 5:00 PM PST
+    slots  = [0, 1, 2]
+    topics = get_related_topics(long_topic, n=3)
 
     results = []
     for i, (topic, slot) in enumerate(zip(topics, slots), 1):
         log.info(f"\n{'='*40}")
-        log.info(f"SHORT #{i} of {n_shorts} — Slot {slot} — {SLOT_SCHEDULE[slot]['label']}")
+        log.info(f"SHORT #{i}/3 — {SLOT_SCHEDULE[slot]['label']}")
         log.info(f"{'='*40}")
         url = run_short(topic, num=i, offset=slot)
         results.append(url)
-        if i < len(topics):
+        if i < 3:
             time.sleep(15)
 
     log.info("="*55)
     log.info("SHORTS COMPLETE")
     for i, url in enumerate(results, 1):
         log.info(f"Short #{i}: {url or 'FAILED'}")
-    if TEST_MODE:
-        log.info("Review: https://studio.youtube.com → Content → Private")
     if not any(results):
         sys.exit(1)
 
