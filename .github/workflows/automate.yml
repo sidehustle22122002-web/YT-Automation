@@ -1,61 +1,100 @@
-name: DarkHistoryMind — Auto Video Pipeline
+name: DarkHistoryMind Pipeline
 
 on:
   schedule:
-    - cron: '30 2 */2 * *'
-  workflow_dispatch:
+    - cron: "30 14 */2 * *"   # Every 2 days at 14:30 UTC (8 PM IST)
+  workflow_dispatch:           # Manual trigger
 
 jobs:
-  produce-video:
+  run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
+
+    env:
+      GROQ_KEY:          ${{ secrets.GROQ_KEY }}
+      PEXELS_KEY:        ${{ secrets.PEXELS_KEY }}
+      PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
+      HF_TOKEN:          ${{ secrets.HF_TOKEN }}
+      GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
+      GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
+      GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
+      SHEET_ID:          ${{ secrets.SHEET_ID }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
+      # ── 2. System packages (FFmpeg, OpenCV deps, font tools) ─────────────────
       - name: Install system dependencies
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y ffmpeg fontconfig -q
-          echo "✅ System deps done"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libgl1-mesa-glx \
+            libglib2.0-0 \
+            libsm6 \
+            libxrender1 \
+            libxext6 \
+            fontconfig \
+            fonts-dejavu-core \
+            fonts-liberation
 
+      # ── 3. Install Playfair Display fonts ────────────────────────────────────
+      #   Strategy: try apt package first; if that fails, download directly from
+      #   Google Fonts. Exit-code 8 from fc-cache / dpkg used to crash the run —
+      #   both paths below are non-fatal and the Python pipeline has its own
+      #   font fallback chain as a final safety net.
+      - name: Install Playfair Display fonts
+        run: |
+          set +e   # Do NOT fail the step on any sub-command error
+
+          # Attempt 1 — apt package (available on Ubuntu 22+)
+          sudo apt-get install -y fonts-playfair-display 2>/dev/null
+          APT_RC=$?
+          if [ $APT_RC -eq 0 ]; then
+            echo "✅ fonts-playfair-display installed via apt"
+          else
+            echo "⚠️  apt install returned $APT_RC — falling back to direct download"
+
+            # Attempt 2 — download variable font from Google Fonts GitHub
+            FONT_DIR="/usr/share/fonts/truetype/custom"
+            sudo mkdir -p "$FONT_DIR"
+
+            BOLD_URL="https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf"
+            sudo curl -fsSL "$BOLD_URL" \
+              -o "$FONT_DIR/PlayfairDisplay-Bold.ttf" 2>/dev/null \
+              && sudo cp "$FONT_DIR/PlayfairDisplay-Bold.ttf" \
+                         "$FONT_DIR/PlayfairDisplay-Regular.ttf" \
+              && echo "✅ Playfair Display downloaded from Google Fonts" \
+              || echo "⚠️  Google Fonts download failed — pipeline will use DejaVu fallback"
+          fi
+
+          # Rebuild font cache — ignore non-zero exit (exit 8 = cache already current)
+          sudo fc-cache -fv 2>/dev/null || true
+          echo "Font setup complete"
+          set -e
+
+      # ── 4. Python ────────────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 5. Python dependencies ───────────────────────────────────────────────
       - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          echo "✅ Python deps done"
+        run: pip install -r requirements.txt
 
-      - name: Install fonts
-        run: |
-          mkdir -p /usr/share/fonts/truetype/custom
-          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf || true
-          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Regular.ttf" -O /usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf || true
-          wget --tries=3 -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-Regular.ttf" -O /usr/share/fonts/truetype/custom/CormorantGaramond-Regular.ttf || true
-          fc-cache -fv || true
-          echo "✅ Fonts done"
-
-      - name: Run pipeline
-        env:
-          GROQ_KEY:          ${{ secrets.GROQ_KEY }}
-          PEXELS_KEY:        ${{ secrets.PEXELS_KEY }}
-          PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
-          HF_TOKEN:          ${{ secrets.HF_TOKEN }}
-          GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
-          GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
-          GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
-          SHEET_ID:          ${{ secrets.SHEET_ID }}
+      # ── 6. Run pipeline ──────────────────────────────────────────────────────
+      - name: Run DarkHistoryMind Pipeline
         run: python pipeline.py
 
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
+      # ── 7. Upload logs on failure ────────────────────────────────────────────
+      - name: Upload pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
         with:
-          name: pipeline-logs
+          name: pipeline-log-${{ github.run_number }}
           path: pipeline.log
-          if-no-files-found: ignore
+          retention-days: 7
