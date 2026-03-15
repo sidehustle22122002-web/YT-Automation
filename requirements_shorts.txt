@@ -1,0 +1,11 @@
+# ── Shorts Pipeline Dependencies ──────────────────────────────
+# These are IN ADDITION to the base requirements.txt
+# Install both: pip install -r requirements.txt -r requirements_shorts.txt
+
+# Audio
+faster-whisper          # word-level timestamps from voice audio
+pyloudnorm              # audio loudness normalization
+
+# Already in requirements.txt but listed for clarity:
+# edge-tts, nest-asyncio, pydub, moviepy, opencv-python-headless
+# Pillow, groq, requests, numpy, gspread, google-api-python-client
