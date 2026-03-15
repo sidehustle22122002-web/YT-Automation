@@ -30,6 +30,7 @@ GDRIVE_SECRETS_ID = os.environ["GDRIVE_SECRETS_ID"]
 GDRIVE_TOKEN_ID   = os.environ["GDRIVE_TOKEN_ID"]
 SHEET_ID          = os.environ["SHEET_ID"]
 CHANNEL_NAME      = "DarkHistoryMind"
+TEST_MODE         = os.environ.get("TEST_MODE", "false").lower() == "true"
 SCENE_ORDER       = ["mystery","explanation","insight","reflection"]
 FPS               = 20
 W, H              = 1920, 1080
@@ -142,6 +143,8 @@ def download_from_drive(file_id, save_path):
 
 def setup_permanent_files():
     log.info("Setting up permanent files...")
+    # Resolve fonts first — before any PIL rendering
+    _download_playfair_if_missing()
     files = {
         "background.mp3":      GDRIVE_MUSIC_ID,
         "client_secrets.json": GDRIVE_SECRETS_ID,
@@ -334,7 +337,22 @@ def generate_voice(script):
 
 # ══════════════════════════════════════════════════════
 # SECTION 4 — CAPTIONS
+# Uses faster-whisper to transcribe voiceover.wav and get
+# exact word-level timestamps — captions always match voice
 # ══════════════════════════════════════════════════════
+CAPTION_KEYWORDS = {
+    "empire","emperor","king","queen","pharaoh","caesar","pope",
+    "blood","death","war","battle","massacre","execution","torture",
+    "secret","hidden","forbidden","truth","lie","betrayal","conspiracy",
+    "vanished","destroyed","collapsed","fell","conquered","murdered","burned",
+    "million","billion","century","centuries","ancient","medieval",
+    "roman","greek","egypt","persian","mongol","viking","spartan",
+    "never","always","only","first","last","single","entire",
+    "dark","evil","brutal","savage","ruthless","feared","powerful",
+    "church","vatican","pope","crusade","inquisition","heresy",
+    "plague","disease","famine","revolt","revolution","assassination",
+}
+
 def get_audio_duration():
     try:
         from moviepy.editor import AudioFileClip
@@ -345,80 +363,232 @@ def get_audio_duration():
     except:
         return 420.0
 
-def generate_captions(script, total_duration, hook):
+def transcribe_voiceover():
+    """
+    Use faster-whisper to transcribe voiceover.wav.
+    Returns list of word dicts: [{word, start, end}, ...]
+    Falls back to empty list if whisper unavailable.
+    """
     try:
-        from groq import Groq
-        client      = Groq(api_key=GROQ_KEY)
-        num_caps    = max(20, int(total_duration / 10))
-        prompt = f"""Create {num_caps} caption moments for a dark history video.
-Duration: {total_duration:.0f} seconds
-Script: {script[:2000]}
-
-Space evenly every 8-12 seconds from start to finish.
-Rules: max 10 words each, dark dramatic tone, mix white(80%) and gold(20%).
-
-Return ONLY JSON array:
-[{{"text":"Caption","time":5.0,"color":"white","size":"large"}}]"""
-
-        r    = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.8, max_tokens=4000
+        from faster_whisper import WhisperModel
+        log.info("Transcribing voiceover with Whisper...")
+        # base model for long-form — better accuracy than tiny
+        model = WhisperModel("base", device="cpu", compute_type="int8")
+        segments, info = model.transcribe(
+            "voiceover.wav",
+            word_timestamps=True,
+            language="en",
+            beam_size=2,
+            vad_filter=True,
         )
-        text = r.choices[0].message.content.strip()
-        text = text.replace("```json","").replace("```","").strip()
-        data = json.loads(text[text.find('['):text.rfind(']')+1])
-
-        captions = []
-        for item in data:
-            t = float(item.get("time",0))
-            if item.get("text") and t < total_duration:
-                captions.append({
-                    "text":  item["text"].strip(),
-                    "start": t,
-                    "end":   min(t+4.5, total_duration-0.5),
-                    "color": item.get("color","white"),
-                    "size":  item.get("size","large")
-                })
-
-        captions.sort(key=lambda x: x["start"])
-
-        # Add hook at start
-        captions.insert(0,{
-            "text":  hook,
-            "start": 1.5,
-            "end":   7.0,
-            "color": "gold",
-            "size":  "large"
-        })
-
-        log.info(f"Captions: {len(captions)}")
-        return captions
+        words = []
+        for seg in segments:
+            if seg.words:
+                for w in seg.words:
+                    words.append({
+                        "word":  w.word.strip(),
+                        "start": round(w.start, 3),
+                        "end":   round(w.end, 3),
+                    })
+        log.info(f"Whisper transcribed: {len(words)} words")
+        return words
+    except ImportError:
+        log.warning("faster-whisper not installed — captions will use script timing")
+        return []
     except Exception as e:
-        log.warning(f"Captions failed: {e}")
-        captions = []
-        t = 5.0
-        while t < total_duration - 5:
+        log.warning(f"Whisper failed: {e} — using script timing")
+        return []
+
+def generate_captions(script, total_duration, hook):
+    """
+    Build captions from real Whisper word timestamps.
+    Groups 3-5 words per caption for long-form readability.
+    Keywords highlighted in gold. Hook always shown at start.
+    """
+    # Get real word timestamps from audio
+    word_timings = transcribe_voiceover()
+
+    captions = []
+
+    # Always add hook at start (first 6 seconds)
+    captions.append({
+        "text":  hook,
+        "start": 1.0,
+        "end":   6.5,
+        "color": "gold",
+        "size":  "large"
+    })
+
+    if word_timings:
+        # Build captions from real timestamps
+        i = 0
+        while i < len(word_timings):
+            # Group 3-5 words per caption for long-form
+            gs    = random.choices([3,4,4,5], weights=[20,40,25,15])[0]
+            group = word_timings[i:i+gs]
+            if not group:
+                break
+
+            g_start = group[0]["start"]
+            g_end   = group[-1]["end"]
+            g_words = [w["word"] for w in group]
+            g_text  = " ".join(g_words)
+
+            # Minimum display time 1.0s
+            if g_end - g_start < 1.0:
+                g_end = g_start + 1.0
+
+            # Cap at next word start to avoid overlap
+            if i + gs < len(word_timings):
+                next_start = word_timings[i+gs]["start"]
+                g_end      = min(g_end, next_start - 0.05)
+
+            g_end = min(g_end, total_duration - 0.2)
+            if g_end <= g_start or g_start < 0.5:
+                i += gs
+                continue
+
+            # Skip if overlaps with hook
+            if g_start < 7.0:
+                i += gs
+                continue
+
+            # Keyword = gold, normal = white
+            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
+                         for w in g_words)
+            color  = "gold" if (has_kw and random.random() < 0.25) else "white"
+
             captions.append({
-                "text":  "The truth was hidden for centuries.",
-                "start": t, "end": t+4.5,
-                "color": "white", "size": "large"
+                "text":  g_text.strip(),
+                "start": g_start,
+                "end":   g_end,
+                "color": color,
+                "size":  "large"
             })
-            t += 12.0
-        return captions
+            i += gs
+
+        log.info(f"Captions from Whisper: {len(captions)} total")
+
+    else:
+        # Fallback: distribute script words evenly across duration
+        log.warning("No Whisper timings — distributing script words evenly")
+        words    = script.split()
+        wdur     = total_duration / max(len(words), 1)
+        i        = 0
+        t        = 7.5  # start after hook
+        gs       = 4
+
+        while i < len(words) and t < total_duration - 2.0:
+            group  = words[i:i+gs]
+            if not group: break
+            cd     = len(group) * wdur
+            cd     = max(1.5, min(4.5, cd))
+            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
+                         for w in group)
+            captions.append({
+                "text":  " ".join(group),
+                "start": round(t, 2),
+                "end":   round(min(t+cd, total_duration-0.2), 2),
+                "color": "gold" if (has_kw and random.random()<0.25) else "white",
+                "size":  "large"
+            })
+            i += gs
+            t += cd + 0.1
+
+        log.info(f"Captions from script fallback: {len(captions)} total")
+
+    captions.sort(key=lambda x: x["start"])
+    return captions
 
 # ── FONT SETUP ────────────────────────────────────────
+# Candidate font paths in priority order — covers GitHub Actions,
+# Ubuntu 20/22/24, and any locally installed fallbacks.
+_FONT_CANDIDATES_BOLD = [
+    # Primary: custom install target
+    "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf",
+    # Fallback 1: fonts-playfair-display package path (Ubuntu)
+    "/usr/share/fonts/truetype/fonts-playfair-display/PlayfairDisplay-Bold.ttf",
+    # Fallback 2: flat truetype dir
+    "/usr/share/fonts/truetype/PlayfairDisplay-Bold.ttf",
+    # Fallback 3: local user fonts
+    os.path.expanduser("~/.local/share/fonts/PlayfairDisplay-Bold.ttf"),
+    # Fallback 4: working directory (downloaded at runtime)
+    "PlayfairDisplay-Bold.ttf",
+    # Fallback 5: any DejaVu bold present on virtually every Ubuntu runner
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+]
+_FONT_CANDIDATES_REGULAR = [
+    "/usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf",
+    "/usr/share/fonts/truetype/fonts-playfair-display/PlayfairDisplay-Regular.ttf",
+    "/usr/share/fonts/truetype/PlayfairDisplay-Regular.ttf",
+    os.path.expanduser("~/.local/share/fonts/PlayfairDisplay-Regular.ttf"),
+    "PlayfairDisplay-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+]
+
+def _download_playfair_if_missing():
+    """Download Playfair Display from Google Fonts if no candidate exists."""
+    urls = {
+        "PlayfairDisplay-Bold.ttf": (
+            "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/"
+            "PlayfairDisplay%5Bwght%5D.ttf"
+        ),
+        "PlayfairDisplay-Regular.ttf": (
+            "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/"
+            "PlayfairDisplay%5Bwght%5D.ttf"
+        ),
+    }
+    # Only download if neither bold nor regular exists anywhere
+    bold_exists = any(os.path.exists(p) for p in _FONT_CANDIDATES_BOLD)
+    if bold_exists:
+        return
+    log.info("No Playfair Display found — downloading from Google Fonts...")
+    # Use the variable font as both bold and regular (PIL picks weight via truetype)
+    vf_url = (
+        "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/"
+        "PlayfairDisplay%5Bwght%5D.ttf"
+    )
+    for dest in ["PlayfairDisplay-Bold.ttf", "PlayfairDisplay-Regular.ttf"]:
+        if os.path.exists(dest):
+            continue
+        try:
+            r = requests.get(vf_url, timeout=30)
+            if r.status_code == 200 and len(r.content) > 1000:
+                with open(dest, "wb") as f:
+                    f.write(r.content)
+                log.info(f"  ✅ Downloaded {dest}")
+            else:
+                log.warning(f"  Font download HTTP {r.status_code}")
+        except Exception as e:
+            log.warning(f"  Font download failed: {e}")
+
+_font_cache: dict = {}
+
 def get_font(size, bold=True):
     from PIL import ImageFont
-    path = (
-        "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf"
-    )
-    try:
-        return ImageFont.truetype(path, size)
-    except:
-        return ImageFont.load_default()
+    cache_key = (size, bold)
+    if cache_key in _font_cache:
+        return _font_cache[cache_key]
+
+    candidates = _FONT_CANDIDATES_BOLD if bold else _FONT_CANDIDATES_REGULAR
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, size)
+                _font_cache[cache_key] = font
+                return font
+            except Exception:
+                continue
+
+    # Last resort: PIL built-in (no size control but never fails)
+    log.warning(f"All font candidates failed for size={size} bold={bold} — using default")
+    font = ImageFont.load_default()
+    _font_cache[cache_key] = font
+    return font
 
 COLORS = {
     "white": (235,235,235),
@@ -1365,17 +1535,10 @@ def generate_thumbnail(topic, title):
         ).convert("RGB")
 
         # ── FONTS ─────────────────────────────────────
-        try:
-            font_huge    = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 115)
-            font_big     = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 88)
-            font_channel = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 30)
-            font_tag     = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf", 24)
-        except:
-            font_huge = font_big = font_channel = font_tag = ImageFont.load_default()
+        font_huge    = get_font(115, bold=True)
+        font_big     = get_font(88,  bold=True)
+        font_channel = get_font(30,  bold=True)
+        font_tag     = get_font(24,  bold=False)
 
         draw = ImageDraw.Draw(img)
 
@@ -1468,11 +1631,7 @@ def generate_thumbnail(topic, title):
         # Clean fallback
         img  = Image.new("RGB",(1280,720),(8,5,3))
         draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 100)
-        except:
-            font = ImageFont.load_default()
+        font = get_font(100, bold=True)
         clean = re.sub(r'[^\x00-\x7F]+','',title).strip()
         words = get_thumbnail_words(clean)
         line1 = " ".join(words[:2]).upper() if words else "DARK HISTORY"
@@ -1520,10 +1679,12 @@ def upload_video(video_file, title, description, thumbnail):
         },
         "status": {
             "privacyStatus": "private",
-            "publishAt": publish_at,
+            "publishAt": None if TEST_MODE else publish_at,
             "selfDeclaredMadeForKids": False,
         }
     }
+    if TEST_MODE:
+        log.info("TEST MODE — uploading as Private, no schedule")
 
     try:
         media   = MediaFileUpload(
