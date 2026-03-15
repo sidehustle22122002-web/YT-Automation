@@ -178,20 +178,25 @@ def clean_topic(topic):
 # ══════════════════════════════════════════════════════
 def get_used_topics():
     try:
-        url  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json"
-        r    = requests.get(url, timeout=15)
-        text = r.text
-        data = json.loads(text[text.find('{'):text.rfind('}')+1])
-        rows = data.get("table",{}).get("rows",[])
-        used = []
-        for row in rows[1:]:
-            cells = row.get("c",[])
-            if cells and cells[0] and cells[0].get("v"):
-                used.append(cells[0]["v"].strip().lower())
+        import gspread
+        from google.oauth2.service_account import Credentials
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_file(
+            "client_secrets.json", scopes=scope
+        )
+        gc = gspread.Client(auth=creds)
+        gc.session = requests.Session()
+        sh = gc.open_by_key(SHEET_ID)
+        ws = sh.get_worksheet(0)
+        col = ws.col_values(1)
+        used = [v.strip().lower() for v in col if v.strip()]
         log.info(f"Used topics: {len(used)}")
         return used
     except Exception as e:
-        log.warning(f"Sheet read failed: {e}")
+        log.warning(f"Sheet read failed: {e} — starting fresh")
         return []
 
 def select_topic(used):
@@ -242,15 +247,16 @@ Output only the sentence."""
 def save_topic_to_sheet(topic):
     try:
         import gspread
-        from google.oauth2.service_account import ServiceAccountCredentials
+        from google.oauth2.service_account import Credentials
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            "client_secrets.json", scope
+        creds = Credentials.from_service_account_file(
+            "client_secrets.json", scopes=scope
         )
-        gc = gspread.authorize(creds)
+        gc = gspread.Client(auth=creds)
+        gc.session = requests.Session()
         sh = gc.open_by_key(SHEET_ID)
         ws = sh.get_worksheet(0)
         ws.append_row([
@@ -355,7 +361,10 @@ CAPTION_KEYWORDS = {
 
 def get_audio_duration():
     try:
-        from moviepy.editor import AudioFileClip
+        try:
+            from moviepy.editor import AudioFileClip
+        except ImportError:
+            from moviepy import AudioFileClip
         clip = AudioFileClip("voiceover.wav")
         dur  = clip.duration
         clip.close()
@@ -601,88 +610,75 @@ def render_caption(frame, text, color_name, size_name, progress):
     img  = Image.fromarray(frame)
     W, H = img.size
 
-    # Hidden Library style — elegant medium serif
+    # Inspired by Shorts style — big bold visible captions
+    # Large enough to read without leaning in, smaller than Shorts (16:9 landscape)
     if size_name == "large":
-        font_size = int(H * 0.042)   # ~45px at 1080p
+        font_size = int(H * 0.068)   # ~73px at 1080p — big and clear
     elif size_name == "medium":
-        font_size = int(H * 0.036)
+        font_size = int(H * 0.055)   # ~59px
     else:
-        font_size = int(H * 0.030)
-    font_size = max(font_size, 32)
-    font_size = min(font_size, 58)
+        font_size = int(H * 0.045)   # ~49px
+    font_size = max(font_size, 52)
+    font_size = min(font_size, 82)
 
-    # Use regular weight for elegance
-    font  = get_font(font_size, bold=False)
+    # Bold font for visibility
+    font  = get_font(font_size, bold=True)
     color = COLORS.get(color_name, COLORS["white"])
 
-    # Smooth fade in/out
-    fade  = min(1.0, progress * 3.0) if progress < 0.4 \
-            else min(1.0, (1.0 - progress) * 3.0)
+    # Pop-in fade: quick appear, hold, quick disappear
+    fade  = min(1.0, progress * 4.0) if progress < 0.3 \
+            else min(1.0, (1.0 - progress) * 4.0)
     alpha = int(255 * fade)
 
-    # Split into lines — max 40 chars per line
+    # Split into lines — max 30 chars for bigger text
     words   = text.split()
     lines   = []
     current = ""
+    tmp_img  = Image.new("RGBA", (W, H))
+    tmp_draw = ImageDraw.Draw(tmp_img)
     for word in words:
         test = f"{current} {word}".strip()
-        if len(test) <= 40:
-            current = test
-        else:
+        bb   = tmp_draw.textbbox((0,0), test, font=font)
+        if bb[2]-bb[0] > W * 0.75:
             if current:
                 lines.append(current)
             current = word
+        else:
+            current = test
     if current:
         lines.append(current)
     lines = lines[:2]
 
-    line_h  = font_size + 10
+    line_h  = font_size + 12
     total_h = len(lines) * line_h
-    pad_x   = 40
-    pad_y   = 18
 
     # Create overlay
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw    = ImageDraw.Draw(overlay)
 
-    # Measure total text block width
-    max_tw = 0
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        tw   = bbox[2] - bbox[0]
-        max_tw = max(max_tw, tw)
-
-    # Position — center horizontal, 82% from top (bottom area)
-    block_w = max_tw + pad_x * 2
-    block_h = total_h + pad_y * 2
-    x_block = (W - block_w) // 2
-    y_block = int(H * 0.82) - block_h // 2
-
-    # Dark semi-transparent background box — Hidden Library style
-    box_alpha = int(175 * fade)
-    draw.rounded_rectangle(
-        [(x_block, y_block),
-         (x_block + block_w, y_block + block_h)],
-        radius=6,
-        fill=(8, 6, 4, box_alpha)
-    )
-
-    # Subtle top border line — gold
-    draw.line(
-        [(x_block + 10, y_block),
-         (x_block + block_w - 10, y_block)],
-        fill=(212, 175, 55, int(120 * fade)),
-        width=1
-    )
+    # Position — bottom 82% area, centered
+    y_block = int(H * 0.82) - total_h // 2
 
     # Draw each line of text
     for li, line in enumerate(lines):
         bbox = draw.textbbox((0, 0), line, font=font)
         tw   = bbox[2] - bbox[0]
         x    = (W - tw) // 2
-        y    = y_block + pad_y + li * line_h
+        y    = y_block + li * line_h
 
-        # Subtle shadow
+        # Heavy black stroke (5px) — same as Shorts style
+        stroke = 5
+        for dx in range(-stroke, stroke+1, 2):
+            for dy in range(-stroke, stroke+1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0,alpha))
+
+        # Gold top accent line for gold captions
+        if color_name == "gold":
+            draw.line([(x, y-4),(x+tw, y-4)], fill=(212,175,55,int(alpha*0.6)), width=2)
+
+        # Main text — subtle shadow
         draw.text(
             (x + 1, y + 1), line,
             font=font, fill=(0, 0, 0, int(alpha * 0.6))
@@ -1254,7 +1250,10 @@ def assemble_video(graded_videos, graded_images,
     log.info("Frames written")
 
     # Add audio
-    from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
+    try:
+        from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
+    except ImportError:
+        from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
     video_clip = VideoFileClip("temp_video.mp4")
     voice      = AudioFileClip("voiceover.wav")
 
@@ -1721,33 +1720,37 @@ def upload_video(video_file, title, description, thumbnail):
 def update_sheet(topic, video_url, title):
     try:
         import gspread
-        from google.oauth2.service_account import ServiceAccountCredentials
+        from google.oauth2.service_account import Credentials
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            "client_secrets.json", scope
+        creds = Credentials.from_service_account_file(
+            "client_secrets.json", scopes=scope
         )
-        gc = gspread.authorize(creds)
+        gc = gspread.Client(auth=creds)
+        gc.session = requests.Session()
+
         sh = gc.open_by_key(SHEET_ID)
         ws = sh.get_worksheet(0)
-        try:
-            cell = ws.find(topic)
-            if cell:
-                ws.update_cell(cell.row,2,
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
-                ws.update_cell(cell.row,3,video_url)
-                ws.update_cell(cell.row,4,"scheduled")
-            else:
-                raise Exception("not found")
-        except:
-            ws.append_row([
-                topic,
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                video_url,"scheduled"
-            ])
-        log.info("Sheet updated")
+
+        # Find existing row or append new
+        all_values = ws.col_values(1)
+        row_idx    = None
+        for i, val in enumerate(all_values):
+            if val and val.strip().lower() == topic.strip().lower():
+                row_idx = i + 1
+                break
+
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        if row_idx:
+            ws.update([[now, video_url, "scheduled"]], f"B{row_idx}:D{row_idx}")
+            log.info(f"Sheet updated row {row_idx}")
+        else:
+            ws.append_row([topic, now, video_url, "scheduled"])
+            log.info("Sheet appended new row")
+
+        log.info(f"Sheet update complete: {video_url}")
     except Exception as e:
         log.warning(f"Sheet update failed: {e}")
 
