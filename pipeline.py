@@ -429,29 +429,34 @@ COLORS = {
 def render_caption(frame, text, color_name, size_name, progress):
     from PIL import Image, ImageDraw, ImageFont
     img  = Image.fromarray(frame)
-    W,H  = img.size
+    W, H = img.size
 
+    # Hidden Library style — elegant medium serif
     if size_name == "large":
-        font_size = min(180, int(H * 0.068 * 2.5))
+        font_size = int(H * 0.042)   # ~45px at 1080p
     elif size_name == "medium":
-        font_size = min(160, int(H * 0.052 * 2.5))
+        font_size = int(H * 0.036)
     else:
-        font_size = min(140, int(H * 0.042 * 2.5))
-    font_size = max(font_size, 60)
+        font_size = int(H * 0.030)
+    font_size = max(font_size, 32)
+    font_size = min(font_size, 58)
 
-    font  = get_font(font_size, bold=True)
+    # Use regular weight for elegance
+    font  = get_font(font_size, bold=False)
     color = COLORS.get(color_name, COLORS["white"])
 
-    fade  = min(1.0, progress*2.5) if progress < 0.5 \
-            else min(1.0,(1.0-progress)*2.5)
+    # Smooth fade in/out
+    fade  = min(1.0, progress * 3.0) if progress < 0.4 \
+            else min(1.0, (1.0 - progress) * 3.0)
     alpha = int(255 * fade)
 
+    # Split into lines — max 40 chars per line
     words   = text.split()
     lines   = []
     current = ""
     for word in words:
         test = f"{current} {word}".strip()
-        if len(test) <= 28:
+        if len(test) <= 40:
             current = test
         else:
             if current:
@@ -461,26 +466,65 @@ def render_caption(frame, text, color_name, size_name, progress):
         lines.append(current)
     lines = lines[:2]
 
-    line_h   = font_size + 12
-    total_h  = len(lines) * line_h
-    y_start  = int(H * 0.45) - total_h // 2
+    line_h  = font_size + 10
+    total_h = len(lines) * line_h
+    pad_x   = 40
+    pad_y   = 18
 
-    overlay = Image.new("RGBA",(W,H),(0,0,0,0))
+    # Create overlay
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw    = ImageDraw.Draw(overlay)
 
+    # Measure total text block width
+    max_tw = 0
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw   = bbox[2] - bbox[0]
+        max_tw = max(max_tw, tw)
+
+    # Position — center horizontal, 82% from top (bottom area)
+    block_w = max_tw + pad_x * 2
+    block_h = total_h + pad_y * 2
+    x_block = (W - block_w) // 2
+    y_block = int(H * 0.82) - block_h // 2
+
+    # Dark semi-transparent background box — Hidden Library style
+    box_alpha = int(175 * fade)
+    draw.rounded_rectangle(
+        [(x_block, y_block),
+         (x_block + block_w, y_block + block_h)],
+        radius=6,
+        fill=(8, 6, 4, box_alpha)
+    )
+
+    # Subtle top border line — gold
+    draw.line(
+        [(x_block + 10, y_block),
+         (x_block + block_w - 10, y_block)],
+        fill=(212, 175, 55, int(120 * fade)),
+        width=1
+    )
+
+    # Draw each line of text
     for li, line in enumerate(lines):
-        y    = y_start + li * line_h
-        bbox = draw.textbbox((0,0),line,font=font)
+        bbox = draw.textbbox((0, 0), line, font=font)
         tw   = bbox[2] - bbox[0]
         x    = (W - tw) // 2
+        y    = y_block + pad_y + li * line_h
 
-        shadow = (0,0,0,int(alpha*0.85))
-        for dx,dy in [(-3,-3),(3,-3),(-3,3),(3,3),(0,4),(4,0)]:
-            draw.text((x+dx,y+dy),line,font=font,fill=shadow)
+        # Subtle shadow
+        draw.text(
+            (x + 1, y + 1), line,
+            font=font, fill=(0, 0, 0, int(alpha * 0.6))
+        )
 
-        draw.text((x,y),line,font=font,fill=(*color,alpha))
+        # Main text — white clean
+        draw.text(
+            (x, y), line,
+            font=font, fill=(*color, alpha)
+        )
 
-    img = Image.alpha_composite(img.convert("RGBA"),overlay)
+    img = Image.alpha_composite(img.convert("RGBA"), overlay)
     return np.array(img.convert("RGB"))
 
 def get_caption_at_time(captions, t):
@@ -1120,24 +1164,35 @@ def generate_title(topic, script):
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
-        prompt = f"""Write ONE viral YouTube title for dark history channel.
+        prompt = f"""You are a viral YouTube title expert for dark history channels.
 Topic: {topic}
-Script: {script[:500]}
-Rules:
-- Max 70 chars with emojis
-- Start with: 🔴 ⚠️ 💀 🔥 🕵️
-- Controversial and shocking
-- End with emoji
-Examples:
-🔴 The Dark Secret CIA Buried For 50 Years 💀
-⚠️ What The Government Never Wanted You To Know 🕵️
-Output only the title."""
+Script excerpt: {script[:500]}
+
+Write ONE YouTube title following these rules:
+- Maximum 65 characters including emojis
+- Start with ONE emoji: 🔴 ⚠️ 💀 🔥 🕵️
+- Must include a high search volume keyword from the topic
+- Extremely controversial — makes viewer angry or shocked
+- Creates massive curiosity gap
+- End with ONE emoji
+- Target both Indian and US audiences
+- Must feel like breaking news or forbidden knowledge
+
+High performing examples:
+🔴 The Dark Secret Napoleon Took To His Grave 💀
+⚠️ What Rome Never Wanted The World To Know 🕵️
+🔥 The Man Who Controlled Millions Through Fear 💀
+🔴 How The Vatican Buried This Truth For 500 Years 🔥
+
+Output only the title. Nothing else."""
+
         r     = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role":"user","content":prompt}],
-            temperature=0.9,max_tokens=80
+            temperature=0.9, max_tokens=100
         )
-        title = r.choices[0].message.content.strip().replace('"','').strip()
+        title = r.choices[0].message.content.strip()
+        title = title.replace('"','').replace("'","").strip()
         log.info(f"Title: {title}")
         return title
     except Exception as e:
@@ -1148,36 +1203,95 @@ def generate_description(topic, script, title, duration):
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
-        prompt = f"""Write YouTube description for dark history video.
+        prompt = f"""Write a fully SEO optimised YouTube description for a dark history documentary.
 Title: {title}
+Topic: {topic}
 Script: {script[:1000]}
-Write 150 words with hook, summary, cliffhanger.
-Output only description."""
+Duration: {int(duration//60)} minutes
+
+Structure:
+1. First 2 lines — powerful hook (most important for SEO)
+2. 3-4 lines — what the video reveals (use keywords naturally)
+3. 1 line — curiosity cliffhanger
+
+Rules:
+- Use these keywords naturally: dark history, hidden truth, {clean_topic(topic)}, secret history, untold story
+- Write conversationally — not like a robot
+- Total 120-150 words
+- No hashtags in this section
+
+Output only the description text."""
+
         r       = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role":"user","content":prompt}],
-            temperature=0.8,max_tokens=300
+            temperature=0.8, max_tokens=400
         )
         summary = r.choices[0].message.content.strip()
-        mins    = int(duration//60)
-        inter   = max(1,mins//5)
-        labels  = ["The Hidden Truth","Dark History Revealed",
-                   "The Real Story","Final Verdict"]
-        ts = "📍 CHAPTERS\n0:00 - Introduction\n"
-        for i in range(1,5):
-            ts += f"{i*inter}:00 - {labels[i-1]}\n"
-        search = clean_topic(topic)
-        tags   = " ".join([f"#{w}" for w in search.lower().split() if len(w)>3])
-        tags  += " #darkhistory #history #documentary #hidden #truth #mystery #india"
-        cta    = (
-            f"\n🔔 Subscribe to {CHANNEL_NAME} for dark history every week.\n"
-            f"👍 Like if this changed how you see history.\n"
-            f"💬 Comment what you want uncovered next.\n"
+
+        # Timestamps
+        mins   = int(duration // 60)
+        inter  = max(1, mins // 5)
+        labels = [
+            "The Hidden Truth Begins",
+            "Dark History Revealed",
+            "The Real Story Unfolds",
+            "The Final Truth"
+        ]
+        ts = "⏱️ CHAPTERS\n00:00 - Introduction\n"
+        for i in range(1, 5):
+            ts += f"{str(i*inter).zfill(2)}:00 - {labels[i-1]}\n"
+
+        # CTA
+        cta = (
+            f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔔 SUBSCRIBE to {CHANNEL_NAME} — New dark history every 2 days\n"
+            f"👍 LIKE if this changed how you see history\n"
+            f"💬 COMMENT your thoughts below\n"
+            f"🔁 SHARE with someone who needs to know this\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )
-        return f"{summary}\n\n{ts}\n{cta}\n{tags}"
+
+        # SEO hashtags — 30+ targeted
+        search      = clean_topic(topic)
+        topic_words = [w for w in search.lower().split() if len(w) > 3]
+        base_tags   = [f"#{w}" for w in topic_words]
+        power_tags  = [
+            "#darkhistory", "#hiddenhistory", "#secrethistory",
+            "#historyfacts", "#untoldhistory", "#historydocumentary",
+            "#ancienthistory", "#historymystery", "#conspiracytheory",
+            "#historicalfacts", "#darktruths", "#forbiddenknowledge",
+            "#historylovers", "#historychannel", "#educationalvideo",
+            "#mystery", "#truth", "#secrets", "#documentary",
+            "#history", "#darkfacts", "#hiddentruth",
+            "#historybuff", "#ancientmysteries", "#losthistory",
+            "#india", "#indianhistory", "#worldhistory",
+            "#viralhistory", "#mindblowing"
+        ]
+        all_tags = " ".join(base_tags + power_tags)
+
+        return f"{summary}\n\n{ts}{cta}\n{all_tags}"
+
     except Exception as e:
         log.warning(f"Description failed: {e}")
-        return f"{topic}\n\n#darkhistory #history"
+        return f"{topic}\n\n#darkhistory #history #documentary"
+
+def get_thumbnail_words(title):
+    """Extract 2-3 most impactful words for thumbnail."""
+    clean = re.sub(r'[^\x00-\x7F]+', '', title).strip()
+    # Remove common filler words
+    stop  = {
+        "the","a","an","of","to","in","is","are","was","were",
+        "and","or","but","for","with","that","this","from","by",
+        "at","on","as","its","it","be","has","had","have","they",
+        "their","his","her","our","your","what","how","why","who",
+        "did","do","does","not","no","never","always","ever","real",
+        "dark","truth","hidden","secret","story","history","about"
+    }
+    words    = [w for w in clean.split() if w.lower() not in stop and len(w) > 2]
+    # Pick 2-3 most powerful words
+    selected = words[:3] if len(words) >= 3 else words
+    return selected
 
 def generate_thumbnail(topic, title):
     from PIL import Image, ImageDraw, ImageFont
@@ -1185,109 +1299,191 @@ def generate_thumbnail(topic, title):
     search = clean_topic(topic)
     ai_ok  = False
 
-    for seed in [42,123,777,999,555]:
+    # Try AI image generation
+    for seed in [42, 123, 777, 999, 555, 333]:
         try:
-            prompt  = (
-                f"dark cinematic {search} dramatic lighting "
-                f"sepia mysterious historical epic "
-                f"no text no watermark youtube thumbnail"
+            prompt = (
+                f"ultra dramatic dark cinematic {search} "
+                f"mysterious figure dramatic shadows "
+                f"sepia tone historical epic atmosphere "
+                f"high contrast moody lighting "
+                f"no text no watermark professional photo"
             )
             encoded = requests.utils.quote(prompt)
             url     = (
                 f"https://image.pollinations.ai/prompt/{encoded}"
                 f"?width=1280&height=720&nologo=true&seed={seed}"
             )
-            r = requests.get(url,timeout=120)
-            if r.status_code==200 and len(r.content)>5000:
+            r = requests.get(url, timeout=120)
+            if r.status_code == 200 and len(r.content) > 5000:
                 with open("thumb_base.jpg","wb") as f:
                     f.write(r.content)
                 ai_ok = True
-                log.info("AI thumbnail generated")
+                log.info(f"AI thumbnail ready (seed {seed})")
                 break
         except:
             continue
 
+    # Fallback to best asset image
     if not ai_ok:
+        log.warning("AI failed — using asset image")
         for scene in ["mystery","explanation","insight","reflection"]:
             folder = f"assets/images/{scene}"
             if os.path.exists(folder):
                 imgs = [f for f in os.listdir(folder) if f.endswith(".jpg")]
                 if imgs:
                     import shutil
-                    shutil.copy(f"{folder}/{imgs[0]}","thumb_base.jpg")
+                    shutil.copy(f"{folder}/{imgs[0]}", "thumb_base.jpg")
                     break
 
     try:
-        img     = Image.open("thumb_base.jpg").convert("RGB")
-        img     = img.resize((1280,720),Image.LANCZOS)
-        overlay = Image.new("RGBA",(1280,720),(0,0,0,0))
+        img = Image.open("thumb_base.jpg").convert("RGB")
+        img = img.resize((1280, 720), Image.LANCZOS)
+
+        # ── DARK OVERLAY ──────────────────────────────
+        overlay = Image.new("RGBA", (1280, 720), (0,0,0,0))
         od      = ImageDraw.Draw(overlay)
-        for y in range(300,720):
-            alpha = int(220*(y-300)/420)
-            od.line([(0,y),(1280,y)],fill=(0,0,0,alpha))
-        for x in range(200):
-            alpha = int(100*(1-x/200))
-            od.line([(x,0),(x,720)],fill=(0,0,0,alpha))
-            od.line([(1280-x,0),(1280-x,720)],fill=(0,0,0,alpha))
-        img = Image.alpha_composite(img.convert("RGBA"),overlay).convert("RGB")
 
+        # Heavy bottom gradient — text area
+        for y in range(200, 720):
+            alpha = int(230 * (y - 200) / 520)
+            od.line([(0,y),(1280,y)], fill=(0,0,0,alpha))
+
+        # Left and right dark edges
+        for x in range(150):
+            alpha = int(80 * (1 - x/150))
+            od.line([(x,0),(x,720)], fill=(0,0,0,alpha))
+            od.line([(1280-x,0),(1280-x,720)], fill=(0,0,0,alpha))
+
+        # Top dark strip
+        for y in range(80):
+            alpha = int(60 * (1 - y/80))
+            od.line([(0,y),(1280,y)], fill=(0,0,0,alpha))
+
+        img = Image.alpha_composite(
+            img.convert("RGBA"), overlay
+        ).convert("RGB")
+
+        # ── FONTS ─────────────────────────────────────
         try:
-            font_big = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf",82)
-            font_sm  = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf",32)
-            font_tag = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf",26)
+            font_huge    = ImageFont.truetype(
+                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 115)
+            font_big     = ImageFont.truetype(
+                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 88)
+            font_channel = ImageFont.truetype(
+                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 30)
+            font_tag     = ImageFont.truetype(
+                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Regular.ttf", 24)
         except:
-            font_big = font_sm = font_tag = ImageFont.load_default()
+            font_huge = font_big = font_channel = font_tag = ImageFont.load_default()
 
-        draw        = ImageDraw.Draw(img)
-        clean_title = re.sub(r'[^\x00-\x7F]+','',title).strip()
-        words       = clean_title.split()
-        mid         = max(1,len(words)//2)
-        lines       = [" ".join(words[:mid])," ".join(words[mid:])]
+        draw = ImageDraw.Draw(img)
 
-        draw.rectangle([(60,395),(420,403)],fill=(180,20,20))
+        # ── THUMBNAIL TEXT — 2-3 BIG WORDS ────────────
+        thumb_words = get_thumbnail_words(title)
 
-        for line,y in zip(lines,[415,515]):
-            if not line.strip(): continue
-            bbox = draw.textbbox((0,0),line,font=font_big)
-            tw   = bbox[2]-bbox[0]
-            x    = (1280-tw)//2
-            for dx,dy in [(-4,-4),(4,-4),(-4,4),(4,4),
-                          (-6,0),(6,0),(0,-6),(0,6),
-                          (-8,0),(8,0),(0,-8),(0,8)]:
-                draw.text((x+dx,y+dy),line,font=font_big,fill=(0,0,0,255))
-            draw.text((x,y),line,font=font_big,fill=(255,255,255,255))
-            draw.line([(x,y+90),(x+tw,y+90)],fill=(212,175,55),width=3)
+        if len(thumb_words) >= 2:
+            # Line 1 — first word/s in WHITE — huge
+            line1 = " ".join(thumb_words[:2]).upper()
+            # Line 2 — last word in RED — accent
+            line2 = thumb_words[-1].upper() if len(thumb_words) >= 3 else ""
+        else:
+            line1 = thumb_words[0].upper() if thumb_words else "DARK"
+            line2 = "SECRET"
 
-        draw.text((35,25),f"🎬 {CHANNEL_NAME}",font=font_sm,fill=(212,175,55))
-        draw.rectangle([(0,672),(1280,720)],fill=(12,8,6))
-        draw.text((35,683),"DARK HISTORY  •  HIDDEN TRUTH  •  CLASSIFIED",
-                 font=font_tag,fill=(180,140,40))
-        draw.line([(0,0),(1280,0)],fill=(212,175,55),width=5)
+        # Draw line 1 — WHITE massive text
+        bbox1 = draw.textbbox((0,0), line1, font=font_huge)
+        tw1   = bbox1[2] - bbox1[0]
+        x1    = (1280 - tw1) // 2
+        y1    = 390
 
-        img.save("thumbnail.jpg",quality=98)
+        # 12-layer black shadow for line 1
+        for dx, dy in [
+            (-5,-5),(5,-5),(-5,5),(5,5),
+            (-8,0),(8,0),(0,-8),(0,8),
+            (-10,0),(10,0),(0,-10),(0,10)
+        ]:
+            draw.text((x1+dx, y1+dy), line1,
+                     font=font_huge, fill=(0,0,0,255))
+
+        # White main text line 1
+        draw.text((x1, y1), line1,
+                 font=font_huge, fill=(255,255,255,255))
+
+        # Draw line 2 — RED accent word
+        if line2:
+            bbox2 = draw.textbbox((0,0), line2, font=font_big)
+            tw2   = bbox2[2] - bbox2[0]
+            x2    = (1280 - tw2) // 2
+            y2    = y1 + 125
+
+            # Red glow background
+            glow_pad = 20
+            draw.rectangle(
+                [(x2 - glow_pad, y2 - 8),
+                 (x2 + tw2 + glow_pad, y2 + 95)],
+                fill=(160, 15, 15)
+            )
+
+            # Shadow for line 2
+            for dx, dy in [(-4,-4),(4,-4),(-4,4),(4,4)]:
+                draw.text((x2+dx, y2+dy), line2,
+                         font=font_big, fill=(0,0,0,255))
+
+            # Red/white text line 2
+            draw.text((x2, y2), line2,
+                     font=font_big, fill=(255,255,255,255))
+
+        # ── RED ACCENT LINE above text ─────────────────
+        draw.rectangle(
+            [(x1, y1 - 18),(x1 + min(tw1, 300), y1 - 10)],
+            fill=(200, 20, 20)
+        )
+
+        # ── CHANNEL NAME — top left ────────────────────
+        draw.text(
+            (30, 22), CHANNEL_NAME,
+            font=font_channel, fill=(212,175,55)
+        )
+
+        # ── BOTTOM BAR ────────────────────────────────
+        draw.rectangle([(0,672),(1280,720)], fill=(8,5,3))
+        draw.text(
+            (35, 684),
+            "DARK HISTORY  •  HIDDEN TRUTH  •  CLASSIFIED",
+            font=font_tag, fill=(180,140,40)
+        )
+
+        # ── GOLD TOP BORDER ────────────────────────────
+        draw.line([(0,0),(1280,0)], fill=(212,175,55), width=5)
+
+        img.save("thumbnail.jpg", quality=98)
         if os.path.exists("thumb_base.jpg"):
             os.remove("thumb_base.jpg")
         log.info("Thumbnail saved")
         return "thumbnail.jpg"
+
     except Exception as e:
-        log.warning(f"Thumbnail compose failed: {e}")
-        img  = Image.new("RGB",(1280,720),(10,8,6))
+        log.warning(f"Thumbnail failed: {e}")
+        # Clean fallback
+        img  = Image.new("RGB",(1280,720),(8,5,3))
         draw = ImageDraw.Draw(img)
         try:
             font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf",75)
+                "/usr/share/fonts/truetype/custom/PlayfairDisplay-Bold.ttf", 100)
         except:
             font = ImageFont.load_default()
         clean = re.sub(r'[^\x00-\x7F]+','',title).strip()
-        words = clean.split()
-        mid   = len(words)//2
-        for line,y in [(" ".join(words[:mid]),250),(" ".join(words[mid:]),370)]:
+        words = get_thumbnail_words(clean)
+        line1 = " ".join(words[:2]).upper() if words else "DARK HISTORY"
+        line2 = words[-1].upper() if len(words) >= 3 else "REVEALED"
+        for line, y, color in [
+            (line1, 280, (255,255,255)),
+            (line2, 420, (220,30,30))
+        ]:
             bbox = draw.textbbox((0,0),line,font=font)
             tw   = bbox[2]-bbox[0]
-            draw.text(((1280-tw)//2,y),line,font=font,fill=(255,255,255))
+            draw.text(((1280-tw)//2,y),line,font=font,fill=color)
         draw.line([(0,690),(1280,690)],fill=(212,175,55),width=4)
         img.save("thumbnail.jpg",quality=98)
         return "thumbnail.jpg"
@@ -1307,10 +1503,17 @@ def upload_video(video_file, title, description, thumbnail):
             "title": title,
             "description": description,
             "tags": [
-                "dark history","history documentary",
-                "hidden truth","ancient history","mystery",
-                "historical facts","educational",
-                "darkhistorymind","conspiracy","india"
+                "dark history","hidden history","secret history",
+                "history documentary","history facts",
+                "untold history","ancient history","mystery",
+                "historical facts","educational","darkhistorymind",
+                "conspiracy","forbidden knowledge","dark truths",
+                "history channel","history mystery","lost history",
+                "ancient mysteries","world history","india history",
+                "dark facts","hidden truth","real history",
+                "history secrets","historical documentary",
+                "mindblowing history","viral history",
+                "history buff","unknown history","classified"
             ],
             "categoryId": "27",
             "defaultLanguage": "en",
