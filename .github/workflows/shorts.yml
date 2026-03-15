@@ -1,31 +1,27 @@
 name: DarkHistoryMind Shorts Pipeline
 
 on:
-  # Auto-trigger after long-form pipeline succeeds
   workflow_run:
     workflows: ["DarkHistoryMind Pipeline"]
     types: [completed]
 
-  # Manual trigger — set test_mode to true for review before going live
   workflow_dispatch:
     inputs:
       long_video_topic:
-        description: "Topic of the long-form video (leave blank to auto-read)"
+        description: "Topic of the long-form video"
         required: false
         default: ""
       test_mode:
-        description: "TEST MODE — 1 short, private upload, no schedule, saves artifact"
+        description: "TEST MODE — 1 short, private, no schedule"
         required: false
         default: "false"
         type: choice
-        options:
-          - "true"
-          - "false"
+        options: ["true", "false"]
 
 jobs:
   run-shorts:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     env:
@@ -34,12 +30,13 @@ jobs:
       PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
       GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
       GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
+      GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
       SHEET_ID:          ${{ secrets.SHEET_ID }}
       LONG_VIDEO_TOPIC:  ${{ github.event.inputs.long_video_topic }}
       TEST_MODE:         ${{ github.event.inputs.test_mode || 'false' }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4.2.2
 
       - name: Install system dependencies
@@ -47,9 +44,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ffmpeg libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
-            fontconfig fonts-dejavu-core fonts-liberation
+            fontconfig fonts-dejavu-core fonts-liberation python3-pip
 
-      - name: Install Shorts fonts (Montserrat + Anton)
+      - name: Install yt-dlp (for YouTube Audio Library music)
+        run: |
+          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: Install Shorts fonts (Montserrat ExtraBold + Anton)
         run: |
           set +e
           sudo apt-get install -y fonts-montserrat 2>/dev/null
@@ -76,7 +80,6 @@ jobs:
       - name: Run Shorts Pipeline
         run: python shorts_pipeline.py
 
-      # ── Upload the test video as downloadable artifact (TEST MODE only) ──
       - name: Upload test video artifact
         if: ${{ github.event.inputs.test_mode == 'true' }}
         uses: actions/upload-artifact@v4.6.2
