@@ -1,21 +1,33 @@
-moviepy==1.0.3
-faster-whisper
-pytrends
-wikipedia
+# ── DarkHistoryMind Pipeline Dependencies ─────────────────────
+
+# AI / LLM
 groq
+
+# Web / API
+requests
+wikipedia
+
+# Video
+moviepy
+opencv-python-headless
+
+# Image
+Pillow
+easyocr
+
+# Audio
 edge-tts
 nest-asyncio
-huggingface_hub
 pydub
-scipy
-noisereduce
 pyloudnorm
-opencv-python-headless
-easyocr
-gspread
+faster-whisper
+
+# Google / YouTube
 google-api-python-client
-google-auth-httplib2
 google-auth-oauthlib
-requests
-Pillow
+google-auth-httplib2
+gspread
+oauth2client
+
+# Core
 numpy
