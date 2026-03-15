@@ -176,23 +176,39 @@ def clean_topic(topic):
 # ══════════════════════════════════════════════════════
 # SECTION 1 — TOPIC RESEARCH
 # ══════════════════════════════════════════════════════
+def get_sheet_client():
+    """Get gspread client using the existing YouTube OAuth token."""
+    import gspread
+    import google.auth.transport.requests
+    creds = None
+    if os.path.exists("youtube_token.pkl"):
+        with open("youtube_token.pkl", "rb") as f:
+            creds = pickle.load(f)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(google.auth.transport.requests.Request())
+        except Exception as e:
+            log.warning(f"Token refresh: {e}")
+    if not creds or not creds.valid:
+        log.warning("No valid creds for sheet")
+        return None
+    gc = gspread.Client(auth=creds)
+    gc.session = requests.Session()
+    return gc
+
 def get_used_topics():
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_file(
-            "client_secrets.json", scopes=scope
-        )
-        gc = gspread.Client(auth=creds)
-        gc.session = requests.Session()
-        sh = gc.open_by_key(SHEET_ID)
-        ws = sh.get_worksheet(0)
-        col = ws.col_values(1)
-        used = [v.strip().lower() for v in col if v.strip()]
+        # Use public gviz endpoint — no auth needed for reading
+        url  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json"
+        r    = requests.get(url, timeout=15)
+        text = r.text
+        data = json.loads(text[text.find('{'):text.rfind('}')+1])
+        rows = data.get("table",{}).get("rows",[])
+        used = []
+        for row in rows[1:]:
+            cells = row.get("c",[])
+            if cells and cells[0] and cells[0].get("v"):
+                used.append(cells[0]["v"].strip().lower())
         log.info(f"Used topics: {len(used)}")
         return used
     except Exception as e:
@@ -246,17 +262,10 @@ Output only the sentence."""
 
 def save_topic_to_sheet(topic):
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_file(
-            "client_secrets.json", scopes=scope
-        )
-        gc = gspread.Client(auth=creds)
-        gc.session = requests.Session()
+        gc = get_sheet_client()
+        if not gc:
+            log.warning("Sheet save skipped — no auth")
+            return
         sh = gc.open_by_key(SHEET_ID)
         ws = sh.get_worksheet(0)
         ws.append_row([
@@ -1719,29 +1728,18 @@ def upload_video(video_file, title, description, thumbnail):
 
 def update_sheet(topic, video_url, title):
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_file(
-            "client_secrets.json", scopes=scope
-        )
-        gc = gspread.Client(auth=creds)
-        gc.session = requests.Session()
-
-        sh = gc.open_by_key(SHEET_ID)
-        ws = sh.get_worksheet(0)
-
-        # Find existing row or append new
-        all_values = ws.col_values(1)
-        row_idx    = None
-        for i, val in enumerate(all_values):
+        gc = get_sheet_client()
+        if not gc:
+            log.warning("Sheet update skipped — no auth")
+            return
+        sh  = gc.open_by_key(SHEET_ID)
+        ws  = sh.get_worksheet(0)
+        col = ws.col_values(1)
+        row_idx = None
+        for i, val in enumerate(col):
             if val and val.strip().lower() == topic.strip().lower():
                 row_idx = i + 1
                 break
-
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         if row_idx:
             ws.update([[now, video_url, "scheduled"]], f"B{row_idx}:D{row_idx}")
@@ -1749,7 +1747,6 @@ def update_sheet(topic, video_url, title):
         else:
             ws.append_row([topic, now, video_url, "scheduled"])
             log.info("Sheet appended new row")
-
         log.info(f"Sheet update complete: {video_url}")
     except Exception as e:
         log.warning(f"Sheet update failed: {e}")
