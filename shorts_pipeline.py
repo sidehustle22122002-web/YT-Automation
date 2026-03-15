@@ -100,9 +100,23 @@ YT_AUDIO_LIBRARY_SEARCHES = [
     "cinematic epic orchestral history free music",
 ]
 
+def resolve_music():
+    """
+    Resolve music file once before assembly.
+    Priority: shorts_music.mp3 → yt-dlp → Pixabay → background.mp3
+    Returns filepath or None.
+    """
+    if os.path.exists("shorts_music.mp3") and os.path.getsize("shorts_music.mp3") > 10000:
+        log.info("Shorts music already downloaded")
+        return "shorts_music.mp3"
+    if os.path.exists("background.mp3") and os.path.getsize("background.mp3") > 10000:
+        log.info("Using background.mp3 as music")
+        return "background.mp3"
+    return download_music()
+
 def download_music():
-    if os.path.exists("shorts_music.mp3"):
-        log.info("✅ Shorts music exists")
+    if os.path.exists("shorts_music.mp3") and os.path.getsize("shorts_music.mp3") > 10000:
+        log.info("Shorts music exists")
         return "shorts_music.mp3"
 
     # Attempt 1: yt-dlp from YouTube Audio Library
@@ -224,62 +238,99 @@ Return ONLY valid JSON:
         return None
 
 # ═══════════════════════════════════════════════════════════════
-# FIX 1 — VOICE + WORD-LEVEL TIMING
-# Edge TTS with word_boundary events → exact per-word timestamps
+# VOICE + WORD-LEVEL TIMING
+# Step 1: edge-tts communicate.save() — reliable audio generation
+# Step 2: faster-whisper word timestamps from the saved audio
+# Step 3: fallback to even-distribution if whisper unavailable
 # ═══════════════════════════════════════════════════════════════
 def generate_voice_with_timing(script_data):
     """
-    Use Edge TTS word_boundary callbacks to get EXACT word timestamps.
-    Returns (audio_duration_seconds, word_timings_list)
-    word_timings: [{"word": str, "start": float, "end": float}, ...]
+    Reliable 2-step approach:
+    1. Generate audio with edge-tts communicate.save() (always works)
+    2. Extract word timestamps with faster-whisper (free, local, accurate)
+    Returns (duration_seconds, word_timings_list)
     """
+    full_script = script_data.get("full_script", "")
+    if not full_script.strip():
+        log.error("Empty script — cannot generate voice")
+        return 0.0, []
+
+    # STEP 1: Generate audio with edge-tts
     try:
         import asyncio, nest_asyncio, edge_tts
         nest_asyncio.apply()
 
-        full_script  = script_data.get("full_script", "")
-        word_timings = []
-
-        async def _voice_with_timing():
+        async def _save_audio():
             communicate = edge_tts.Communicate(
                 full_script,
                 voice="en-GB-ThomasNeural",
-                rate="+0%",   # natural pace — script is already calibrated to 30-40s
+                rate="+0%",
                 pitch="-8Hz"
             )
-            audio_chunks = []
-            async for event in communicate.stream():
-                if event["type"] == "audio":
-                    audio_chunks.append(event["data"])
-                elif event["type"] == "WordBoundary":
-                    # offset is in 100-nanosecond units
-                    start_s = event["offset"] / 1e7
-                    dur_s   = event["duration"] / 1e7
-                    word_timings.append({
-                        "word":  event["text"],
-                        "start": round(start_s, 3),
-                        "end":   round(start_s + dur_s, 3),
-                    })
-            with open("shorts_raw_voice.mp3", "wb") as f:
-                for chunk in audio_chunks:
-                    f.write(chunk)
+            await communicate.save("shorts_raw_voice.mp3")
 
-        asyncio.run(_voice_with_timing())
-        log.info(f"Word timings collected: {len(word_timings)} words")
+        asyncio.run(_save_audio())
 
-        # Process audio
+        if not os.path.exists("shorts_raw_voice.mp3") or            os.path.getsize("shorts_raw_voice.mp3") < 1000:
+            log.error("Edge TTS produced no audio file")
+            return 0.0, []
+
+        log.info("Voice audio saved")
+
         from pydub import AudioSegment
         audio = AudioSegment.from_mp3("shorts_raw_voice.mp3").set_frame_rate(48000)
-        audio = audio.apply_gain(-audio.dBFS + (-14))  # normalize to -14 LUFS
+        audio = audio.apply_gain(-audio.dBFS + (-14))
         dur   = len(audio) / 1000
         audio.export("shorts_voice.wav", format="wav")
-
-        log.info(f"Voice duration: {dur:.2f}s")
-        return dur, word_timings
+        log.info(f"Voice: {dur:.2f}s")
 
     except Exception as e:
-        log.error(f"Voice+timing failed: {e}")
+        log.error(f"Edge TTS failed: {e}")
         return 0.0, []
+
+    # STEP 2: Get word timestamps with faster-whisper
+    word_timings = []
+    try:
+        from faster_whisper import WhisperModel
+        log.info("Running Whisper for word timestamps...")
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(
+            "shorts_voice.wav",
+            word_timestamps=True,
+            language="en",
+            beam_size=1,
+            vad_filter=True,
+        )
+        for seg in segments:
+            if seg.words:
+                for w in seg.words:
+                    word_timings.append({
+                        "word":  w.word.strip(),
+                        "start": round(w.start, 3),
+                        "end":   round(w.end, 3),
+                    })
+        log.info(f"Whisper: {len(word_timings)} word timestamps")
+    except ImportError:
+        log.warning("faster-whisper not installed — using even distribution")
+    except Exception as e:
+        log.warning(f"Whisper failed: {e} — using even distribution")
+
+    # STEP 3: Fallback — evenly distribute words over duration
+    if not word_timings:
+        log.info("Building estimated word timings...")
+        words = full_script.split()
+        wdur  = dur / max(len(words), 1)
+        t     = 0.0
+        for w in words:
+            word_timings.append({
+                "word":  w,
+                "start": round(t, 3),
+                "end":   round(t + wdur * 0.9, 3),
+            })
+            t += wdur
+        log.info(f"Estimated {len(word_timings)} word timings")
+
+    return dur, word_timings
 
 def get_audio_dur():
     try:
@@ -647,9 +698,11 @@ def dust(frame, seed=0):
 # FIX 4: CRF 18, preset slow → true 1080p quality
 # FIX 5: clip duration calculated from voice duration
 # ═══════════════════════════════════════════════════════════════
-def assemble(assets, captions, total_dur, output_file):
+def assemble(assets, captions, total_dur, music_file, output_file):
     import cv2
     log.info(f"Assembling {total_dur:.1f}s video with {len(assets)} clips...")
+    log.info(f"  Voice: shorts_voice.wav ({os.path.getsize('shorts_voice.wav')//1024}KB)")
+    log.info(f"  Music: {music_file or 'none'}")
 
     # FIX 4: pre-load all images at full 1080p quality
     frames_data = []
@@ -715,8 +768,9 @@ def assemble(assets, captions, total_dur, output_file):
     log.info("Raw frames written")
 
     # ── AUDIO MIX + FINAL ENCODE ──────────────────────────────
-    # FIX 4: Use FFmpeg CRF 18 + slow preset for true 1080p quality
-    music_file = download_music()
+    log.info("Starting FFmpeg audio mux...")
+    log.info(f"  shorts_voice.wav exists: {os.path.exists('shorts_voice.wav')}")
+    log.info(f"  music_file: {music_file}, exists: {music_file and os.path.exists(music_file)}")
 
     if music_file and os.path.exists(music_file):
         af  = (
@@ -759,13 +813,26 @@ def assemble(assets, captions, total_dur, output_file):
             output_file
         ]
 
+    log.info(f"FFmpeg cmd: {' '.join(cmd[:8])}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        log.error(f"FFmpeg: {result.stderr[-400:]}")
+        log.error(f"FFmpeg FAILED (code {result.returncode})")
+        log.error(f"FFmpeg stderr: {result.stderr[-600:]}")
         import shutil; shutil.copy("shorts_temp.mp4", output_file)
+        log.warning("Fallback: copied silent video")
     else:
         size_mb = os.path.getsize(output_file) / 1024 / 1024
-        log.info(f"✅ Encoded: {output_file} ({size_mb:.1f} MB)")
+        log.info(f"FFmpeg SUCCESS: {output_file} ({size_mb:.1f} MB)")
+        # Verify audio stream exists in output
+        probe = subprocess.run(
+            ["ffprobe","-v","error","-select_streams","a",
+             "-show_entries","stream=codec_name","-of","csv=p=0", output_file],
+            capture_output=True, text=True
+        )
+        if probe.stdout.strip():
+            log.info(f"Audio stream verified: {probe.stdout.strip()}")
+        else:
+            log.error("WARNING: Output video has NO audio stream!")
 
     if os.path.exists("shorts_temp.mp4"):
         os.remove("shorts_temp.mp4")
@@ -997,30 +1064,50 @@ def run_short(topic, num, offset):
 
     # 1. Script
     script = generate_script(topic)
-    if not script: return None
-    hook   = script.get("hook","The truth was buried for centuries.")
+    if not script:
+        log.error("ABORT: Script generation failed")
+        return None
+    hook = script.get("hook","The truth was buried for centuries.")
+    log.info(f"Script OK — hook: {hook}")
 
-    # 2. Voice + word timings (FIX 1)
+    # 2. Voice — hard verify file exists and has content
     dur, word_timings = generate_voice_with_timing(script)
-    if dur < 5:
-        dur = get_audio_dur()
-        word_timings = []
 
-    # FIX 5: enforce 30-40s
+    # Hard check: voice file must exist
+    if not os.path.exists("shorts_voice.wav"):
+        log.error("ABORT: shorts_voice.wav not found after voice generation")
+        return None
+    voice_size = os.path.getsize("shorts_voice.wav")
+    if voice_size < 1000:
+        log.error(f"ABORT: shorts_voice.wav too small ({voice_size} bytes)")
+        return None
+
+    # Get real duration from file
+    dur = get_audio_dur()
+    log.info(f"Voice file verified: {voice_size//1024}KB, {dur:.2f}s")
+
+    # Enforce 30-40s
     dur = max(MIN_DUR, min(MAX_DUR, dur))
-    log.info(f"Duration: {dur:.2f}s")
+    log.info(f"Final duration: {dur:.2f}s")
 
-    # 3. Captions synced to voice (FIX 1)
+    # 3. Captions — only built if we have real voice
     captions = build_synced_captions(script, word_timings, dur)
+    log.info(f"Captions built: {len(captions)}")
 
-    # 4. Assets (FIX 4: high-res)
+    # 4. Music — resolve BEFORE assembly
+    music_file = resolve_music()
+    log.info(f"Music: {music_file or 'NONE — voice only'}")
+
+    # 5. Assets
     assets = fetch_assets(topic)
-    if not assets: return None
+    if not assets:
+        log.error("ABORT: No assets fetched")
+        return None
 
-    # 5. Assemble (FIX 3: hard cut | FIX 4: CRF 18)
+    # 6. Assemble
     safe = re.sub(r'[^\w\s]','',topic).replace(' ','_')[:40]
     out  = f"short_{num}_{safe}.mp4"
-    ok   = assemble(assets, captions, dur, out)
+    ok   = assemble(assets, captions, dur, music_file, out)
     if not ok or not os.path.exists(out): return None
 
     size_mb = os.path.getsize(out)/1024/1024
