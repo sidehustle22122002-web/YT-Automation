@@ -1,27 +1,23 @@
 name: DarkHistoryMind Shorts Pipeline
 
 on:
+  # Auto-triggers after long-form pipeline completes
   workflow_run:
     workflows: ["DarkHistoryMind Pipeline"]
     types: [completed]
 
+  # Manual trigger
   workflow_dispatch:
     inputs:
       long_video_topic:
-        description: "Topic of the long-form video"
+        description: "Topic of the long-form video just published"
         required: false
         default: ""
-      test_mode:
-        description: "TEST MODE — 1 short, private, no schedule"
-        required: false
-        default: "false"
-        type: choice
-        options: ["true", "false"]
 
 jobs:
   run-shorts:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     env:
@@ -32,31 +28,56 @@ jobs:
       GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
       GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
       SHEET_ID:          ${{ secrets.SHEET_ID }}
-      LONG_VIDEO_TOPIC:  ${{ github.event.inputs.long_video_topic }}
-      TEST_MODE:         ${{ github.event.inputs.test_mode || 'false' }}
 
     steps:
-      - name: Checkout
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY/go" "$AGENT_TOOLSDIRECTORY/node"
+          sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
+          docker system prune -af 2>/dev/null || true
+          df -h /
+
+      - name: Checkout repository
         uses: actions/checkout@v4.2.2
+
+      # Extract topic from long-form pipeline log
+      - name: Download long-form pipeline log
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: pipeline-log-${{ github.event.workflow_run.run_number }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+        continue-on-error: true
+
+      - name: Extract topic from log
+        id: extract_topic
+        run: |
+          TOPIC=""
+          if [ -f "pipeline.log" ]; then
+            TOPIC=$(grep "Topic:" pipeline.log | head -1 | sed 's/.*Topic: //' | tr -d '\r\n')
+          fi
+          if [ -z "$TOPIC" ]; then
+            TOPIC="${{ github.event.inputs.long_video_topic }}"
+          fi
+          if [ -z "$TOPIC" ]; then
+            TOPIC="The Dark Truth About Ancient History"
+          fi
+          echo "LONG_VIDEO_TOPIC=$TOPIC" >> $GITHUB_ENV
+          echo "Topic: $TOPIC"
 
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ffmpeg libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
-            fontconfig fonts-dejavu-core fonts-liberation python3-pip
+            fontconfig fonts-dejavu-core fonts-liberation
 
-      - name: Install yt-dlp (for YouTube Audio Library music)
-        run: |
-          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-            -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
-          yt-dlp --version
-
-      - name: Install Shorts fonts (Montserrat ExtraBold + Anton)
+      - name: Install Shorts fonts
         run: |
           set +e
-          sudo apt-get install -y fonts-montserrat 2>/dev/null
           FONT_DIR="/usr/share/fonts/truetype/custom"
           sudo mkdir -p "$FONT_DIR"
           sudo curl -fsSL \
@@ -75,18 +96,10 @@ jobs:
           cache: pip
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt -r requirements_shorts.txt
+        run: pip install -r requirements.txt
 
       - name: Run Shorts Pipeline
         run: python shorts_pipeline.py
-
-      - name: Upload test video artifact
-        if: ${{ github.event.inputs.test_mode == 'true' }}
-        uses: actions/upload-artifact@v4.6.2
-        with:
-          name: test-short-${{ github.run_number }}
-          path: "short_*.mp4"
-          retention-days: 3
 
       - name: Upload log
         if: always()
