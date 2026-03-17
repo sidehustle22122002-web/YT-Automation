@@ -716,25 +716,46 @@ def assemble(assets, captions, total_dur, output_file):
     writer.release()
     log.info("Frames written")
 
-    # ── AUDIO MUX: voice only ─────────────────────────
+    # ── AUDIO MUX: voice + background music ───────────
     log.info(f"Muxing audio: shorts_voice.wav ({os.path.getsize('shorts_voice.wav')//1024}KB)")
+    music = "background.mp3" if os.path.exists("background.mp3") else None
+    log.info(f"Music: {music or 'none'}")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", "shorts_temp.mp4",
-        "-i", "shorts_voice.wav",
-        "-c:v", "libx264",
-        "-crf", "18",
-        "-preset", "fast",
-        "-profile:v", "high",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-ar", "48000",
-        "-t", str(total_dur),
-        "-movflags", "+faststart",
-        "-pix_fmt", "yuv420p",
-        output_file
-    ]
+    if music:
+        # Mix voice (dominant) + background music (low volume, same as long-form)
+        af  = (
+            "[1:a]volume=1.0[v];"
+            "[2:a]volume=0.08,aloop=0:size=2e+09,atrim=0={dur}[m];"
+            "[v][m]amix=inputs=2:duration=first[aout]"
+        ).format(dur=total_dur)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", "shorts_temp.mp4",
+            "-i", "shorts_voice.wav",
+            "-i", music,
+            "-filter_complex", af,
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-profile:v", "high",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-t", str(total_dur),
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            output_file
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", "shorts_temp.mp4",
+            "-i", "shorts_voice.wav",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-profile:v", "high",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-t", str(total_dur),
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            output_file
+        ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -744,18 +765,13 @@ def assemble(assets, captions, total_dur, output_file):
     else:
         size_mb = os.path.getsize(output_file) / 1024 / 1024
         log.info(f"Video: {output_file} ({size_mb:.1f}MB)")
-
-        # Verify audio stream
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=codec_name", "-of", "csv=p=0", output_file],
             capture_output=True, text=True
         )
         stream = probe.stdout.strip()
-        if stream:
-            log.info(f"Audio stream: {stream} ✅")
-        else:
-            log.error("NO AUDIO STREAM in output!")
+        log.info(f"Audio stream: {stream} ✅" if stream else "WARNING: NO AUDIO STREAM!")
 
     if os.path.exists("shorts_temp.mp4"):
         os.remove("shorts_temp.mp4")
@@ -890,21 +906,36 @@ Title example: "THIS Empire Vanished In ONE Night 💀 #Shorts" """
 # Short #3 — Gap day evening, 01:00 UTC (+2 days)
 #             = 8:00 PM EST / 5:00 PM PST
 
+# ── SHORTS SCHEDULE ───────────────────────────────────
+# Long-form publishes at 8 PM IST (14:30 UTC)
+# Shorts pipeline runs immediately after long-form finishes
+#
+# Short #1 → gap day,     1:00 AM IST = 19:30 UTC  (5h after long-form)
+# Short #2 → gap day,     8:00 PM IST = 14:30 UTC  (next day)
+# Short #3 → new vid day, 12:30 AM IST = 19:00 UTC (day before new long-form)
+#
+# IST to UTC: subtract 5h30m
+# 1:00 AM IST  = 19:30 UTC previous day → +1 day from 19:30 UTC
+# 8:00 PM IST  = 14:30 UTC same day     → +1 day
+# 12:30 AM IST = 19:00 UTC previous day → +2 days from 19:00 UTC
+
 SLOT_SCHEDULE = {
-    0: {"hour": 18, "minute": 30, "days_ahead": 0,  "label": "12:00 AM IST / 1:30 PM EST"},
-    1: {"hour": 16, "minute":  0, "days_ahead": 1,  "label": "11:00 AM EST / 8:00 AM PST"},
-    2: {"hour":  1, "minute":  0, "days_ahead": 2,  "label": "8:00 PM EST / 5:00 PM PST"},
+    0: {"hour": 19, "minute": 30, "days_ahead": 1, "label": "1:00 AM IST gap day"},
+    1: {"hour": 14, "minute": 30, "days_ahead": 1, "label": "8:00 PM IST gap day"},
+    2: {"hour": 19, "minute":  0, "days_ahead": 2, "label": "12:30 AM IST new video day"},
 }
 
 def get_schedule(slot):
     now  = datetime.datetime.utcnow()
     cfg  = SLOT_SCHEDULE.get(slot, SLOT_SCHEDULE[0])
-    t    = now.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
-    t   += datetime.timedelta(days=cfg["days_ahead"])
+    # Build target time: today at cfg hour:min + days_ahead
+    base = now.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
+    t    = base + datetime.timedelta(days=cfg["days_ahead"])
+    # Safety: never schedule in the past
     if t <= now:
         t += datetime.timedelta(days=1)
     ist  = t + datetime.timedelta(hours=5, minutes=30)
-    log.info(f"Slot {slot} → {t.strftime('%Y-%m-%d %H:%M')} UTC | {ist.strftime('%I:%M %p')} IST | {cfg['label']}")
+    log.info(f"Slot {slot} → {t.strftime('%Y-%m-%d %H:%M')} UTC | {ist.strftime('%d %b %I:%M %p')} IST | {cfg['label']}")
     return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def get_yt():
@@ -963,9 +994,6 @@ def upload(video_file, seo, thumbnail, offset=0):
         vid = response["id"]
         url = f"https://youtube.com/watch?v={vid}"
         log.info(f"Uploaded: {url}")
-        if TEST_MODE:
-            log.info("Review: https://studio.youtube.com → Content → Private")
-
         try:
             yt.thumbnails().set(
                 videoId=vid,
@@ -1005,20 +1033,38 @@ def setup_auth():
         if not os.path.exists(name):
             log.info(f"Downloading {name}...")
             dl_drive(fid, name)
+    # Download background.mp3 for shorts music
+    if not os.path.exists("background.mp3") and GDRIVE_MUSIC_ID:
+        log.info("Downloading background.mp3...")
+        dl_drive(GDRIVE_MUSIC_ID, "background.mp3")
+        log.info("background.mp3 ready" if os.path.exists("background.mp3") else "background.mp3 failed")
+
+def get_sheet_client():
+    """Get gspread client using existing YouTube OAuth token."""
+    import gspread
+    import google.auth.transport.requests
+    creds = None
+    if os.path.exists("youtube_token.pkl"):
+        with open("youtube_token.pkl", "rb") as f:
+            creds = pickle.load(f)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(google.auth.transport.requests.Request())
+        except Exception as e:
+            log.warning(f"Token refresh: {e}")
+    if not creds or not creds.valid:
+        log.warning("No valid creds for sheet")
+        return None
+    gc = gspread.Client(auth=creds)
+    gc.session = requests.Session()
+    return gc
 
 def update_sheet(topic, url, title, num):
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_file(
-            "client_secrets.json", scopes=scope
-        )
-        gc = gspread.Client(auth=creds)
-        gc.session = requests.Session()
+        gc = get_sheet_client()
+        if not gc:
+            log.warning("Sheet update skipped — no auth")
+            return
         sh = gc.open_by_key(SHEET_ID)
         try:
             ws = sh.get_worksheet(1)
@@ -1030,7 +1076,7 @@ def update_sheet(topic, url, title, num):
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "scheduled"
         ])
-        log.info("Sheet updated")
+        log.info(f"Sheet updated: short #{num}")
     except Exception as e:
         log.warning(f"Sheet: {e}")
 
