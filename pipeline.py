@@ -419,30 +419,39 @@ def transcribe_voiceover():
 
 def generate_captions(script, total_duration, hook):
     """
-    Build captions from real Whisper word timestamps.
-    Groups 3-5 words per caption for long-form readability.
-    Keywords highlighted in gold. Hook always shown at start.
+    Build captions from Whisper word timestamps — exact sync with voice.
+    Same approach as shorts (proven working) scaled for long-form.
+
+    KEY FIX: No words are skipped. Hook is shown as overlay on top of
+    the first caption group — both displayed simultaneously so no
+    words are lost from the Whisper transcript.
     """
-    # Get real word timestamps from audio
     word_timings = transcribe_voiceover()
-
-    captions = []
-
-    # Always add hook at start (first 6 seconds)
-    captions.append({
-        "text":  hook,
-        "start": 1.0,
-        "end":   6.5,
-        "color": "gold",
-        "size":  "large"
-    })
+    captions     = []
 
     if word_timings:
-        # Build captions from real timestamps
+        log.info(f"Building captions from {len(word_timings)} Whisper words")
+
+        # Hook: show as gold overlay from video start until first word
+        # End hook exactly when first word starts so no overlap
+        first_word_start = word_timings[0]["start"]
+        hook_end         = max(first_word_start, 1.5)
+        # If voice starts immediately, show hook for at least 3s
+        if hook_end < 3.0:
+            hook_end = min(3.0, first_word_start + 3.0)
+
+        captions.append({
+            "text":  hook,
+            "start": 0.5,
+            "end":   hook_end,
+            "color": "gold",
+            "size":  "large"
+        })
+
+        # Process ALL words — no skipping based on timestamp
         i = 0
         while i < len(word_timings):
-            # Group 3-5 words per caption for long-form
-            gs    = random.choices([3,4,4,5], weights=[20,40,25,15])[0]
+            gs    = random.choices([3, 4, 4, 5], weights=[20, 40, 25, 15])[0]
             group = word_timings[i:i+gs]
             if not group:
                 break
@@ -450,36 +459,35 @@ def generate_captions(script, total_duration, hook):
             g_start = group[0]["start"]
             g_end   = group[-1]["end"]
             g_words = [w["word"] for w in group]
-            g_text  = " ".join(g_words)
+            g_text  = " ".join(g_words).strip()
 
-            # Minimum display time 1.0s
-            if g_end - g_start < 1.0:
-                g_end = g_start + 1.0
+            if not g_text:
+                i += gs
+                continue
 
-            # Cap at next word start to avoid overlap
+            # Minimum display 0.8s
+            if g_end - g_start < 0.8:
+                g_end = g_start + 0.8
+
+            # Cap at next group start to avoid overlap
             if i + gs < len(word_timings):
-                next_start = word_timings[i+gs]["start"]
-                g_end      = min(g_end, next_start - 0.05)
+                g_end = min(g_end, word_timings[i+gs]["start"] - 0.05)
 
-            g_end = min(g_end, total_duration - 0.2)
-            if g_end <= g_start or g_start < 0.5:
+            g_end = min(g_end, total_duration - 0.1)
+            if g_end <= g_start:
                 i += gs
                 continue
 
-            # Skip if overlaps with hook
-            if g_start < 7.0:
-                i += gs
-                continue
-
-            # Keyword = gold, normal = white
-            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
-                         for w in g_words)
-            color  = "gold" if (has_kw and random.random() < 0.25) else "white"
+            has_kw = any(
+                w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
+                for w in g_words
+            )
+            color = "gold" if (has_kw and random.random() < 0.25) else "white"
 
             captions.append({
-                "text":  g_text.strip(),
-                "start": g_start,
-                "end":   g_end,
+                "text":  g_text,
+                "start": round(g_start, 3),
+                "end":   round(g_end, 3),
                 "color": color,
                 "size":  "large"
             })
@@ -488,32 +496,39 @@ def generate_captions(script, total_duration, hook):
         log.info(f"Captions from Whisper: {len(captions)} total")
 
     else:
-        # Fallback: distribute script words evenly across duration
-        log.warning("No Whisper timings — distributing script words evenly")
-        words    = script.split()
-        wdur     = total_duration / max(len(words), 1)
-        i        = 0
-        t        = 7.5  # start after hook
-        gs       = 4
+        # Fallback — evenly distribute actual script words
+        log.warning("No Whisper timings — using script word distribution")
+        words = script.split()
+        wdur  = total_duration / max(len(words), 1)
 
-        while i < len(words) and t < total_duration - 2.0:
-            group  = words[i:i+gs]
+        # Hook first
+        captions.append({
+            "text":  hook,
+            "start": 0.5,
+            "end":   min(4.0, len(hook.split()) * wdur * 1.2),
+            "color": "gold",
+            "size":  "large"
+        })
+
+        t  = captions[0]["end"] + 0.1
+        i  = 0
+        gs = 4
+        while i < len(words) and t < total_duration - 1.0:
+            group = words[i:i+gs]
             if not group: break
-            cd     = len(group) * wdur
-            cd     = max(1.5, min(4.5, cd))
-            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
-                         for w in group)
+            cd    = max(1.5, min(4.5, len(group) * wdur))
+            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS for w in group)
             captions.append({
                 "text":  " ".join(group),
                 "start": round(t, 2),
-                "end":   round(min(t+cd, total_duration-0.2), 2),
+                "end":   round(min(t+cd, total_duration-0.1), 2),
                 "color": "gold" if (has_kw and random.random()<0.25) else "white",
                 "size":  "large"
             })
             i += gs
-            t += cd + 0.1
+            t += cd + 0.05
 
-        log.info(f"Captions from script fallback: {len(captions)} total")
+        log.info(f"Fallback captions: {len(captions)} total")
 
     captions.sort(key=lambda x: x["start"])
     return captions
@@ -1338,13 +1353,45 @@ def get_youtube_service():
 
     return build("youtube","v3",credentials=creds,cache_discovery=False)
 
-def generate_title(topic, script):
+def get_existing_titles():
+    """Read all existing titles from sheet column C to check duplicates."""
     try:
-        from groq import Groq
-        client = Groq(api_key=GROQ_KEY)
-        prompt = f"""You are a viral YouTube title expert for dark history channels.
+        url  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json"
+        r    = requests.get(url, timeout=15)
+        text = r.text
+        data = json.loads(text[text.find('{'):text.rfind('}')+1])
+        rows = data.get("table",{}).get("rows",[])
+        titles = []
+        topics = []
+        for row in rows[1:]:
+            cells = row.get("c",[])
+            # col A = topic, col C = title/url
+            if cells and len(cells) > 0:
+                if cells[0] and cells[0].get("v"):
+                    topics.append(cells[0]["v"].strip().lower())
+                if len(cells) > 2 and cells[2] and cells[2].get("v"):
+                    val = cells[2]["v"].strip()
+                    # Only add if it looks like a title (not a URL)
+                    if val and not val.startswith("http"):
+                        titles.append(val.lower())
+        log.info(f"Existing titles: {len(titles)} | topics: {len(topics)}")
+        return titles, topics
+    except Exception as e:
+        log.warning(f"Could not read existing titles: {e}")
+        return [], []
+
+def generate_title(topic, script):
+    """Generate title and ensure it's not a duplicate in the sheet."""
+    existing_titles, existing_topics = get_existing_titles()
+
+    def _make_title(attempt=0):
+        try:
+            from groq import Groq
+            client = Groq(api_key=GROQ_KEY)
+            prompt = f"""You are a viral YouTube title expert for dark history channels.
 Topic: {topic}
 Script excerpt: {script[:500]}
+{"Attempt #"+str(attempt+1)+": Generate a DIFFERENT title from previous attempts." if attempt > 0 else ""}
 
 Write ONE YouTube title following these rules:
 - Maximum 65 characters including emojis
@@ -1364,18 +1411,31 @@ High performing examples:
 
 Output only the title. Nothing else."""
 
-        r     = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.9, max_tokens=100
-        )
-        title = r.choices[0].message.content.strip()
-        title = title.replace('"','').replace("'","").strip()
-        log.info(f"Title: {title}")
-        return title
-    except Exception as e:
-        log.warning(f"Title failed: {e}")
-        return f"🔴 {topic} 💀"
+            r     = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role":"user","content":prompt}],
+                temperature=0.9 + attempt*0.05,
+                max_tokens=100
+            )
+            t = r.choices[0].message.content.strip()
+            t = t.replace('"','').replace("'","").strip()
+            return t
+        except Exception as e:
+            log.warning(f"Title gen failed: {e}")
+            return f"🔴 {topic} 💀"
+
+    # Generate and check for duplicates — up to 3 attempts
+    for attempt in range(3):
+        title = _make_title(attempt)
+        if title.lower() not in existing_titles:
+            log.info(f"Title (attempt {attempt+1}): {title}")
+            return title
+        log.warning(f"Duplicate title detected: {title} — retrying...")
+
+    # If still duplicate after 3 tries, use it anyway (very unlikely)
+    log.warning("Could not generate unique title — using last generated")
+    log.info(f"Title: {title}")
+    return title
 
 def generate_description(topic, script, title, duration):
     try:
@@ -1727,6 +1787,10 @@ def upload_video(video_file, title, description, thumbnail):
         return None, None
 
 def update_sheet(topic, video_url, title):
+    """
+    Update sheet after upload.
+    Columns: A=Topic | B=Date | C=Title | D=URL | E=Status
+    """
     try:
         gc = get_sheet_client()
         if not gc:
@@ -1742,12 +1806,13 @@ def update_sheet(topic, video_url, title):
                 break
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         if row_idx:
-            ws.update([[now, video_url, "scheduled"]], f"B{row_idx}:D{row_idx}")
-            log.info(f"Sheet updated row {row_idx}")
+            # Update: date, title, url, status
+            ws.update([[now, title, video_url, "scheduled"]], f"B{row_idx}:E{row_idx}")
+            log.info(f"Sheet updated row {row_idx}: {title}")
         else:
-            ws.append_row([topic, now, video_url, "scheduled"])
-            log.info("Sheet appended new row")
-        log.info(f"Sheet update complete: {video_url}")
+            ws.append_row([topic, now, title, video_url, "scheduled"])
+            log.info(f"Sheet new row: {title}")
+        log.info(f"Sheet complete: {video_url}")
     except Exception as e:
         log.warning(f"Sheet update failed: {e}")
 
