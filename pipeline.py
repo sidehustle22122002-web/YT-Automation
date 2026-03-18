@@ -1241,28 +1241,35 @@ def assemble_video(graded_videos, graded_images,
         FPS,(W,H)
     )
 
-    time_offset = 0.0
-    last_frame  = None
+    # audio_offset tracks position in the AUDIO timeline (matches Whisper timestamps)
+    # time_offset tracks position in the VIDEO timeline (includes transitions)
+    # Captions use audio_offset — NOT time_offset — for correct sync
+    audio_offset = 0.0
+    time_offset  = 0.0
+    last_frame   = None
 
     for i,(mtype,scene,path) in enumerate(media):
-        if time_offset >= total_duration: break
+        if audio_offset >= total_duration: break
 
         clip_dur  = CLIP_DUR_VIDEO if mtype=="video" else CLIP_DUR_IMAGE
-        clip_dur  = min(clip_dur,total_duration-time_offset)
+        clip_dur  = min(clip_dur, total_duration - audio_offset)
 
         log.info(f"  [{i+1}/{len(media)}] {mtype}: {scene}/{os.path.basename(path)[:20]}")
 
         if last_frame is not None:
             next_f = get_first_frame(mtype,path)
             write_transition(writer,last_frame,next_f,get_transition(i))
+            # Transitions add video time but NOT audio time
+            time_offset += TRANS_DUR
 
         last_frame = write_clip_frames(
             writer,mtype,path,clip_dur,
-            captions,time_offset,total_duration,
+            captions,audio_offset,total_duration,
             first_clip=(i==0)
         )
-        time_offset += clip_dur
-        log.info(f"    [{time_offset:.1f}s / {total_duration:.1f}s]")
+        audio_offset += clip_dur
+        time_offset  += clip_dur
+        log.info(f"    [audio:{audio_offset:.1f}s / {total_duration:.1f}s]")
 
     # Fade out
     if last_frame is not None:
@@ -1531,23 +1538,33 @@ def get_thumbnail_words(title):
     selected = words[:3] if len(words) >= 3 else words
     return selected
 
+# Thumbnail style variants — rotated per video for variety
+THUMB_STYLES = [
+    "ultra dramatic dark cinematic {search} mysterious figure shadows sepia historical epic no text no watermark",
+    "dark moody portrait {search} ancient ruler dramatic lighting oil painting style no text no watermark",
+    "cinematic wide shot {search} ancient ruins foggy atmospheric dark historical epic no text no watermark",
+    "dramatic close up {search} ancient artifact glowing dark background mysterious no text no watermark",
+    "dark medieval painting style {search} battle scene dramatic lighting no text no watermark",
+    "atmospheric {search} ancient civilization ruins sunset dark dramatic historical no text no watermark",
+]
+
 def generate_thumbnail(topic, title):
     from PIL import Image, ImageDraw, ImageFont
     log.info("Generating thumbnail...")
     search = clean_topic(topic)
     ai_ok  = False
 
-    # Try AI image generation
-    for seed in [42, 123, 777, 999, 555, 333]:
+    # Derive unique seed from topic — different image every video
+    topic_seed = abs(hash(topic)) % 100000
+    # Pick style variant based on topic hash
+    style_idx  = abs(hash(topic + "style")) % len(THUMB_STYLES)
+    style      = THUMB_STYLES[style_idx].format(search=search)
+
+    # Try 3 seeds derived from topic — unique per video
+    seeds = [topic_seed, topic_seed + 1000, topic_seed + 2000]
+    for seed in seeds:
         try:
-            prompt = (
-                f"ultra dramatic dark cinematic {search} "
-                f"mysterious figure dramatic shadows "
-                f"sepia tone historical epic atmosphere "
-                f"high contrast moody lighting "
-                f"no text no watermark professional photo"
-            )
-            encoded = requests.utils.quote(prompt)
+            encoded = requests.utils.quote(style)
             url     = (
                 f"https://image.pollinations.ai/prompt/{encoded}"
                 f"?width=1280&height=720&nologo=true&seed={seed}"
@@ -1557,7 +1574,7 @@ def generate_thumbnail(topic, title):
                 with open("thumb_base.jpg","wb") as f:
                     f.write(r.content)
                 ai_ok = True
-                log.info(f"AI thumbnail ready (seed {seed})")
+                log.info(f"AI thumbnail ready (seed {seed}, style {style_idx})")
                 break
         except:
             continue
@@ -1806,8 +1823,8 @@ def update_sheet(topic, video_url, title):
                 break
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         if row_idx:
-            # Update: date, title, url, status
-            ws.update([[now, title, video_url, "scheduled"]], f"B{row_idx}:E{row_idx}")
+            # gspread update: range first, values second
+            ws.update(f"B{row_idx}:E{row_idx}", [[now, title, video_url, "scheduled"]])
             log.info(f"Sheet updated row {row_idx}: {title}")
         else:
             ws.append_row([topic, now, title, video_url, "scheduled"])
