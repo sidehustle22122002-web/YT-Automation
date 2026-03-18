@@ -130,31 +130,60 @@ Return ONLY valid JSON:
         wc   = len(data.get("full_script", "").split())
         log.info(f"Script: {wc} words | Hook: {data.get('hook','')}")
 
-        # Retry if under 85 words — keep retrying until we get enough
+        # If full_script is short, rebuild it from sections
+        sections = ["hook","fact1","fact2","story","conclusion"]
+        built = " ".join(data.get(s,"") for s in sections if data.get(s,"")).strip()
+        built_wc = len(built.split())
+        if built_wc > wc:
+            data["full_script"] = built
+            wc = built_wc
+            log.info(f"Rebuilt from sections: {wc} words")
+
+        # Retry up to 5 times if still under 85 words
         attempts = 0
-        while wc < 85 and attempts < 3:
+        while wc < 85 and attempts < 5:
             attempts += 1
-            log.warning(f"Script too short ({wc} words) — retry {attempts}...")
-            retry_prompt = f"""Previous script was only {wc} words. NOT ACCEPTABLE.
-Topic: {topic}
-HARD REQUIREMENT: full_script MUST be 100 words. Count every single word.
-Structure: HOOK(10) + FACT1(20) + FACT2(20) + STORY(30) + CONCLUSION(20) = 100 words total.
-Return ONLY valid JSON:
-{{"hook":"","fact1":"","fact2":"","story":"","conclusion":"","full_script":"100 word script"}}"""
+            log.warning(f"Script too short ({wc} words) — retry {attempts}/5...")
+            retry_prompt = f"""Write a dark history YouTube Shorts script about: {topic}
+The script must be EXACTLY 100 words when all sections are combined.
+Return ONLY this JSON with no extra text:
+{{"hook":"10 word shocking statement","fact1":"20 word dark fact sentence","fact2":"20 word darker fact sentence","story":"30 word shocking core truth with multiple sentences","conclusion":"20 word haunting final revelation","full_script":"all sections combined into one 100 word paragraph"}}"""
             r2    = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": retry_prompt}],
-                temperature=0.9,
+                temperature=0.95,
                 max_tokens=800
             )
             text2 = r2.choices[0].message.content.strip()
             text2 = text2.replace("```json","").replace("```","").strip()
-            data2 = json.loads(text2[text2.find('{'):text2.rfind('}')+1])
-            wc2   = len(data2.get("full_script","").split())
-            log.info(f"Retry {attempts}: {wc2} words")
-            if wc2 > wc:
-                data = data2
-                wc   = wc2
+            try:
+                data2 = json.loads(text2[text2.find('{'):text2.rfind('}')+1])
+                # Try rebuilding from sections first
+                built2 = " ".join(data2.get(s,"") for s in sections if data2.get(s,"")).strip()
+                built2_wc = len(built2.split())
+                fs_wc = len(data2.get("full_script","").split())
+                # Use whichever is longer
+                if built2_wc > fs_wc:
+                    data2["full_script"] = built2
+                    wc2 = built2_wc
+                else:
+                    wc2 = fs_wc
+                log.info(f"Retry {attempts}: {wc2} words")
+                if wc2 > wc:
+                    data = data2
+                    wc   = wc2
+            except Exception as pe:
+                log.warning(f"Retry {attempts} parse failed: {pe}")
+
+        # Final safety: if still short, pad by repeating conclusion
+        if wc < 70:
+            log.warning(f"Script only {wc} words after retries — padding")
+            full = data.get("full_script","")
+            conclusion = data.get("conclusion","The truth was buried for centuries.")
+            while len(full.split()) < 85:
+                full += " " + conclusion
+            data["full_script"] = " ".join(full.split()[:100])
+            wc = len(data["full_script"].split())
 
         log.info(f"Final script: {wc} words")
         return data
@@ -725,9 +754,9 @@ def assemble(assets, captions, total_dur, output_file):
         # Mix voice (dominant) + background music (low volume, same as long-form)
         af  = (
             "[1:a]volume=1.0[v];"
-            "[2:a]volume=0.08,aloop=0:size=2e+09,atrim=0={dur}[m];"
-            "[v][m]amix=inputs=2:duration=first[aout]"
-        ).format(dur=total_dur)
+            "[2:a]volume=0.08,aloop=0:size=2e+09[m];"
+            "[v][m]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        )
         cmd = [
             "ffmpeg", "-y",
             "-i", "shorts_temp.mp4",
