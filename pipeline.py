@@ -145,8 +145,10 @@ def setup_permanent_files():
     log.info("Setting up permanent files...")
     # Resolve fonts first — before any PIL rendering
     _download_playfair_if_missing()
+
+    # Always re-download background.mp3 to pick up music changes
+    # Other files only downloaded if missing
     files = {
-        "background.mp3":      GDRIVE_MUSIC_ID,
         "client_secrets.json": GDRIVE_SECRETS_ID,
         "youtube_token.pkl":   GDRIVE_TOKEN_ID,
     }
@@ -157,6 +159,11 @@ def setup_permanent_files():
         log.info(f"  Downloading {name}...")
         ok = download_from_drive(fid, name)
         log.info(f"  {'✅' if ok else '❌'} {name}")
+
+    # Always refresh music to pick up any Drive ID changes
+    log.info("  Downloading background.mp3 (always fresh)...")
+    ok = download_from_drive(GDRIVE_MUSIC_ID, "background.mp3")
+    log.info(f"  {'✅' if ok else '❌'} background.mp3")
 
 def clean_topic(topic):
     for p in [
@@ -178,23 +185,29 @@ def clean_topic(topic):
 # ══════════════════════════════════════════════════════
 def get_sheet_client():
     """Get gspread client using the existing YouTube OAuth token."""
-    import gspread
-    import google.auth.transport.requests
-    creds = None
-    if os.path.exists("youtube_token.pkl"):
-        with open("youtube_token.pkl", "rb") as f:
-            creds = pickle.load(f)
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(google.auth.transport.requests.Request())
-        except Exception as e:
-            log.warning(f"Token refresh: {e}")
-    if not creds or not creds.valid:
-        log.warning("No valid creds for sheet")
+    try:
+        import gspread
+        import google.auth.transport.requests
+        creds = None
+        if os.path.exists("youtube_token.pkl"):
+            with open("youtube_token.pkl", "rb") as f:
+                creds = pickle.load(f)
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(google.auth.transport.requests.Request())
+                log.info("Sheet token refreshed")
+            except Exception as e:
+                log.warning(f"Token refresh: {e}")
+        if not creds or not creds.valid:
+            log.warning("No valid creds for sheet")
+            return None
+        # Use gspread.authorize() — most compatible method
+        gc = gspread.authorize(creds)
+        log.info("Sheet client ready")
+        return gc
+    except Exception as e:
+        log.warning(f"Sheet client failed: {e}")
         return None
-    gc = gspread.Client(auth=creds)
-    gc.session = requests.Session()
-    return gc
 
 def get_used_topics():
     try:
@@ -432,23 +445,21 @@ def generate_captions(script, total_duration, hook):
     if word_timings:
         log.info(f"Building captions from {len(word_timings)} Whisper words")
 
-        # Hook: show as gold overlay from video start until first word
-        # End hook exactly when first word starts so no overlap
+        # Whisper timestamps are ground truth — use exactly as-is.
+        # No offsets. The audio assembly will be aligned to match.
         first_word_start = word_timings[0]["start"]
-        hook_end         = max(first_word_start, 1.5)
-        # If voice starts immediately, show hook for at least 3s
-        if hook_end < 3.0:
-            hook_end = min(3.0, first_word_start + 3.0)
 
+        # Hook shown before first word, ends exactly when speech starts
+        hook_end = first_word_start if first_word_start > 0.5 else 1.0
         captions.append({
             "text":  hook,
-            "start": 0.5,
-            "end":   hook_end,
+            "start": 0.0,
+            "end":   round(hook_end, 3),
             "color": "gold",
             "size":  "large"
         })
 
-        # Process ALL words — no skipping based on timestamp
+        # All words — pure Whisper timestamps, no modification
         i = 0
         while i < len(word_timings):
             gs    = random.choices([3, 4, 4, 5], weights=[20, 40, 25, 15])[0]
@@ -465,15 +476,15 @@ def generate_captions(script, total_duration, hook):
                 i += gs
                 continue
 
-            # Minimum display 0.8s
-            if g_end - g_start < 0.8:
-                g_end = g_start + 0.8
+            # Minimum display 0.5s — match natural speech pace
+            if g_end - g_start < 0.5:
+                g_end = g_start + 0.5
 
-            # Cap at next group start to avoid overlap
+            # Cap exactly at next word start — no gap, no overlap
             if i + gs < len(word_timings):
-                g_end = min(g_end, word_timings[i+gs]["start"] - 0.05)
+                g_end = min(g_end, word_timings[i+gs]["start"] - 0.02)
 
-            g_end = min(g_end, total_duration - 0.1)
+            g_end = min(g_end, total_duration - 0.05)
             if g_end <= g_start:
                 i += gs
                 continue
@@ -1211,8 +1222,10 @@ def write_clip_frames(writer,mtype,path,duration,
         if mtype=="video": frame = get_video_frame(cap,total,i,duration)
         else:              frame = ken_burns(img,t,duration,kb_effect)
 
-        if first_clip and i < int(1.5*FPS):
-            frame = fade_black(frame,i/(1.5*FPS),fade_in=True)
+        # No fade-in — audio starts at t=0 and captions match audio timestamps
+        # A fade-in would desync captions from voice at the start
+        # if first_clip and i < int(1.5*FPS):
+        #     frame = fade_black(frame,i/(1.5*FPS),fade_in=True)
 
         frame = add_dust(frame,seed=i)
 
@@ -1554,20 +1567,22 @@ def generate_thumbnail(topic, title):
     search = clean_topic(topic)
     ai_ok  = False
 
-    # Derive unique seed from topic — different image every video
-    topic_seed = abs(hash(topic)) % 100000
-    # Pick style variant based on topic hash
-    style_idx  = abs(hash(topic + "style")) % len(THUMB_STYLES)
+    # Generate unique seed per video using time + topic
+    # Use time-based seed so every run gets completely different image
+    run_seed   = int(datetime.datetime.now().timestamp()) % 100000
+    style_idx  = run_seed % len(THUMB_STYLES)
     style      = THUMB_STYLES[style_idx].format(search=search)
 
-    # Try 3 seeds derived from topic — unique per video
-    seeds = [topic_seed, topic_seed + 1000, topic_seed + 2000]
-    for seed in seeds:
+    log.info(f"Thumbnail style {style_idx}: {style[:60]}...")
+
+    # Try 3 different seeds — stop at first success
+    for seed_offset in [0, 3333, 7777]:
         try:
+            seed    = run_seed + seed_offset
             encoded = requests.utils.quote(style)
             url     = (
                 f"https://image.pollinations.ai/prompt/{encoded}"
-                f"?width=1280&height=720&nologo=true&seed={seed}"
+                f"?width=1280&height=720&nologo=true&seed={seed}&enhance=true"
             )
             r = requests.get(url, timeout=120)
             if r.status_code == 200 and len(r.content) > 5000:
