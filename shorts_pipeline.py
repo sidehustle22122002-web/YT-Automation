@@ -229,10 +229,27 @@ def generate_voice(script_data):
         audio = AudioSegment.from_mp3("shorts_raw_voice.mp3")
         audio = audio.set_frame_rate(48000)
         audio = audio.apply_gain(-audio.dBFS + (-14))
-        dur   = len(audio) / 1000
-        audio.export("shorts_voice.wav", format="wav")
 
-        log.info(f"Voice saved: {dur:.2f}s")
+        # Strip any trailing silence to prevent loop bug
+        # pydub sometimes adds padding — remove anything below -50dBFS at end
+        raw_dur = len(audio) / 1000
+
+        # Export clean WAV
+        audio.export("shorts_voice.wav", format="wav", parameters=["-ar","48000"])
+
+        # Get exact duration via ffprobe (most reliable)
+        try:
+            probe = subprocess.run(
+                ["ffprobe","-v","error","-show_entries","format=duration",
+                 "-of","default=noprint_wrappers=1:nokey=1","shorts_voice.wav"],
+                capture_output=True, text=True, timeout=10
+            )
+            exact_dur = float(probe.stdout.strip())
+            log.info(f"Voice saved: {exact_dur:.3f}s (raw: {raw_dur:.3f}s)")
+        except Exception:
+            exact_dur = raw_dur
+            log.info(f"Voice saved: {exact_dur:.2f}s")
+
         return True
 
     except Exception as e:
@@ -240,6 +257,19 @@ def generate_voice(script_data):
         return False
 
 def get_voice_duration():
+    """Get exact duration using ffprobe — most reliable method."""
+    try:
+        probe = subprocess.run(
+            ["ffprobe","-v","error","-show_entries","format=duration",
+             "-of","default=noprint_wrappers=1:nokey=1","shorts_voice.wav"],
+            capture_output=True, text=True, timeout=10
+        )
+        d = float(probe.stdout.strip())
+        log.info(f"Voice duration (ffprobe): {d:.3f}s")
+        return d
+    except Exception:
+        pass
+    # Fallback to moviepy
     try:
         try:
             from moviepy.editor import AudioFileClip
@@ -1062,31 +1092,34 @@ def setup_auth():
         if not os.path.exists(name):
             log.info(f"Downloading {name}...")
             dl_drive(fid, name)
-    # Download background.mp3 for shorts music
-    if not os.path.exists("background.mp3") and GDRIVE_MUSIC_ID:
-        log.info("Downloading background.mp3...")
-        dl_drive(GDRIVE_MUSIC_ID, "background.mp3")
-        log.info("background.mp3 ready" if os.path.exists("background.mp3") else "background.mp3 failed")
+    # Always re-download background.mp3 to pick up music changes
+    if GDRIVE_MUSIC_ID:
+        log.info("Downloading background.mp3 (always fresh)...")
+        ok = dl_drive(GDRIVE_MUSIC_ID, "background.mp3")
+        log.info(f"background.mp3: {'ready' if ok else 'failed'}")
 
 def get_sheet_client():
     """Get gspread client using existing YouTube OAuth token."""
-    import gspread
-    import google.auth.transport.requests
-    creds = None
-    if os.path.exists("youtube_token.pkl"):
-        with open("youtube_token.pkl", "rb") as f:
-            creds = pickle.load(f)
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(google.auth.transport.requests.Request())
-        except Exception as e:
-            log.warning(f"Token refresh: {e}")
-    if not creds or not creds.valid:
-        log.warning("No valid creds for sheet")
+    try:
+        import gspread
+        import google.auth.transport.requests
+        creds = None
+        if os.path.exists("youtube_token.pkl"):
+            with open("youtube_token.pkl", "rb") as f:
+                creds = pickle.load(f)
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(google.auth.transport.requests.Request())
+            except Exception as e:
+                log.warning(f"Token refresh: {e}")
+        if not creds or not creds.valid:
+            log.warning("No valid creds for sheet")
+            return None
+        gc = gspread.authorize(creds)
+        return gc
+    except Exception as e:
+        log.warning(f"Sheet client failed: {e}")
         return None
-    gc = gspread.Client(auth=creds)
-    gc.session = requests.Session()
-    return gc
 
 def update_sheet(topic, url, title, num):
     try:
