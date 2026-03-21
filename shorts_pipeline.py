@@ -224,32 +224,32 @@ def generate_voice(script_data):
             log.error(f"Voice file too small: {size} bytes")
             return False
 
-        # Process audio
+        # Process audio — export clean WAV
         from pydub import AudioSegment
         audio = AudioSegment.from_mp3("shorts_raw_voice.mp3")
         audio = audio.set_frame_rate(48000)
         audio = audio.apply_gain(-audio.dBFS + (-14))
+        dur   = len(audio) / 1000
+        audio.export("shorts_voice.wav", format="wav")
 
-        # Strip any trailing silence to prevent loop bug
-        # pydub sometimes adds padding — remove anything below -50dBFS at end
-        raw_dur = len(audio) / 1000
+        # Trim with FFmpeg to remove any trailing silence padding
+        # This prevents the loop bug at end of video
+        trim_cmd = [
+            "ffmpeg", "-y",
+            "-i", "shorts_voice.wav",
+            "-af", "silenceremove=stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB",
+            "-ar", "48000",
+            "shorts_voice_trim.wav"
+        ]
+        result = subprocess.run(trim_cmd, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.exists("shorts_voice_trim.wav"):
+            trimmed_size = os.path.getsize("shorts_voice_trim.wav")
+            orig_size    = os.path.getsize("shorts_voice.wav")
+            if trimmed_size > 1000:
+                os.replace("shorts_voice_trim.wav", "shorts_voice.wav")
+                log.info(f"Silence trimmed: {orig_size//1024}KB → {trimmed_size//1024}KB")
 
-        # Export clean WAV
-        audio.export("shorts_voice.wav", format="wav", parameters=["-ar","48000"])
-
-        # Get exact duration via ffprobe (most reliable)
-        try:
-            probe = subprocess.run(
-                ["ffprobe","-v","error","-show_entries","format=duration",
-                 "-of","default=noprint_wrappers=1:nokey=1","shorts_voice.wav"],
-                capture_output=True, text=True, timeout=10
-            )
-            exact_dur = float(probe.stdout.strip())
-            log.info(f"Voice saved: {exact_dur:.3f}s (raw: {raw_dur:.3f}s)")
-        except Exception:
-            exact_dur = raw_dur
-            log.info(f"Voice saved: {exact_dur:.2f}s")
-
+        log.info(f"Voice saved: {dur:.2f}s")
         return True
 
     except Exception as e:
@@ -257,19 +257,18 @@ def generate_voice(script_data):
         return False
 
 def get_voice_duration():
-    """Get exact duration using ffprobe — most reliable method."""
+    """Use ffprobe for exact duration — prevents loop bug."""
     try:
-        probe = subprocess.run(
-            ["ffprobe","-v","error","-show_entries","format=duration",
-             "-of","default=noprint_wrappers=1:nokey=1","shorts_voice.wav"],
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", "shorts_voice.wav"],
             capture_output=True, text=True, timeout=10
         )
-        d = float(probe.stdout.strip())
+        d = float(result.stdout.strip())
         log.info(f"Voice duration (ffprobe): {d:.3f}s")
         return d
-    except Exception:
-        pass
-    # Fallback to moviepy
+    except Exception as e:
+        log.warning(f"ffprobe failed: {e} — using pydub")
     try:
         try:
             from moviepy.editor import AudioFileClip
@@ -978,23 +977,38 @@ Title example: "THIS Empire Vanished In ONE Night 💀 #Shorts" """
 # 8:00 PM IST  = 14:30 UTC same day     → +1 day
 # 12:30 AM IST = 19:00 UTC previous day → +2 days from 19:00 UTC
 
+# ── SHORTS SCHEDULE ─────────────────────────────────
+# Long-form publishes 8 PM IST (14:30 UTC) on DAY 0
+# Shorts pipeline runs right after on DAY 0 (~16:00 UTC)
+# All times in UTC. IST = UTC + 5:30
+#
+# Short #1 → DAY 1 (gap day)  01:00 AM IST = 19:30 UTC DAY 0 → schedule DAY 1 19:30 UTC
+# Short #2 → DAY 1 (gap day)  08:00 PM IST = 14:30 UTC DAY 1 → schedule DAY 1+1=DAY 2 14:30 UTC
+#   NOTE: 14:30 < 19:30 so same calendar day would be before #1 — push to DAY 2
+# Short #3 → DAY 2 (new video day) 12:30 AM IST = 19:00 UTC DAY 1 → schedule DAY 3 19:00 UTC
+
+# ── SHORTS SCHEDULE ─────────────────────────────────
+# Pipeline runs ~16:00 UTC Day 0 (after long form finishes)
+# Short #1 → 1:00 AM IST gap day    = 19:30 UTC Day 0  (same day, +3.5h)
+# Short #2 → 8:00 PM IST gap day    = 14:30 UTC Day 1  (next day morning UTC)
+# Short #3 → 12:30 AM IST new video = 19:00 UTC Day 1  (next day evening UTC)
+# Ordering: 19:30 Day0 → 14:30 Day1 → 19:00 Day1 ✅
+
 SLOT_SCHEDULE = {
-    0: {"hour": 19, "minute": 30, "days_ahead": 1, "label": "1:00 AM IST gap day"},
-    1: {"hour": 14, "minute": 30, "days_ahead": 1, "label": "8:00 PM IST gap day"},
-    2: {"hour": 19, "minute":  0, "days_ahead": 2, "label": "12:30 AM IST new video day"},
+    0: {"hour": 19, "minute": 30, "days_ahead": 0, "label": "1:00 AM IST  — gap day"},
+    1: {"hour": 14, "minute": 30, "days_ahead": 1, "label": "8:00 PM IST  — gap day"},
+    2: {"hour": 19, "minute":  0, "days_ahead": 1, "label": "12:30 AM IST — new video day"},
 }
 
 def get_schedule(slot):
     now  = datetime.datetime.utcnow()
     cfg  = SLOT_SCHEDULE.get(slot, SLOT_SCHEDULE[0])
-    # Build target time: today at cfg hour:min + days_ahead
     base = now.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
     t    = base + datetime.timedelta(days=cfg["days_ahead"])
-    # Safety: never schedule in the past
     if t <= now:
         t += datetime.timedelta(days=1)
     ist  = t + datetime.timedelta(hours=5, minutes=30)
-    log.info(f"Slot {slot} → {t.strftime('%Y-%m-%d %H:%M')} UTC | {ist.strftime('%d %b %I:%M %p')} IST | {cfg['label']}")
+    log.info(f"Short slot {slot}: {t.strftime('%Y-%m-%d %H:%M')} UTC = {ist.strftime('%d %b %I:%M %p')} IST — {cfg['label']}")
     return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def get_yt():
@@ -1092,14 +1106,14 @@ def setup_auth():
         if not os.path.exists(name):
             log.info(f"Downloading {name}...")
             dl_drive(fid, name)
-    # Always re-download background.mp3 to pick up music changes
-    if GDRIVE_MUSIC_ID:
-        log.info("Downloading background.mp3 (always fresh)...")
-        ok = dl_drive(GDRIVE_MUSIC_ID, "background.mp3")
-        log.info(f"background.mp3: {'ready' if ok else 'failed'}")
+    # Download background.mp3 for shorts music
+    if not os.path.exists("background.mp3") and GDRIVE_MUSIC_ID:
+        log.info("Downloading background.mp3...")
+        dl_drive(GDRIVE_MUSIC_ID, "background.mp3")
+        log.info("background.mp3 ready" if os.path.exists("background.mp3") else "background.mp3 failed")
 
 def get_sheet_client():
-    """Get gspread client using existing YouTube OAuth token."""
+    """Get gspread client using YouTube OAuth token."""
     try:
         import gspread
         import google.auth.transport.requests
@@ -1107,18 +1121,23 @@ def get_sheet_client():
         if os.path.exists("youtube_token.pkl"):
             with open("youtube_token.pkl", "rb") as f:
                 creds = pickle.load(f)
-        if creds and creds.expired and creds.refresh_token:
+        if not creds:
+            log.warning("No token for sheet")
+            return None
+        if hasattr(creds,"expired") and creds.expired and hasattr(creds,"refresh_token") and creds.refresh_token:
             try:
                 creds.refresh(google.auth.transport.requests.Request())
+                log.info("Sheet creds refreshed")
             except Exception as e:
-                log.warning(f"Token refresh: {e}")
-        if not creds or not creds.valid:
-            log.warning("No valid creds for sheet")
+                log.warning(f"Refresh: {e}")
+        if hasattr(creds,"valid") and not creds.valid:
+            log.warning("Sheet creds not valid")
             return None
         gc = gspread.authorize(creds)
+        log.info("Sheet client ready")
         return gc
     except Exception as e:
-        log.warning(f"Sheet client failed: {e}")
+        log.warning(f"Sheet client error: {e}")
         return None
 
 def update_sheet(topic, url, title, num):
