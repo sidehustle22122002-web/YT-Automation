@@ -145,10 +145,8 @@ def setup_permanent_files():
     log.info("Setting up permanent files...")
     # Resolve fonts first — before any PIL rendering
     _download_playfair_if_missing()
-
-    # Always re-download background.mp3 to pick up music changes
-    # Other files only downloaded if missing
     files = {
+        "background.mp3":      GDRIVE_MUSIC_ID,
         "client_secrets.json": GDRIVE_SECRETS_ID,
         "youtube_token.pkl":   GDRIVE_TOKEN_ID,
     }
@@ -159,11 +157,6 @@ def setup_permanent_files():
         log.info(f"  Downloading {name}...")
         ok = download_from_drive(fid, name)
         log.info(f"  {'✅' if ok else '❌'} {name}")
-
-    # Always refresh music to pick up any Drive ID changes
-    log.info("  Downloading background.mp3 (always fresh)...")
-    ok = download_from_drive(GDRIVE_MUSIC_ID, "background.mp3")
-    log.info(f"  {'✅' if ok else '❌'} background.mp3")
 
 def clean_topic(topic):
     for p in [
@@ -184,7 +177,7 @@ def clean_topic(topic):
 # SECTION 1 — TOPIC RESEARCH
 # ══════════════════════════════════════════════════════
 def get_sheet_client():
-    """Get gspread client using the existing YouTube OAuth token."""
+    """Get gspread client using YouTube OAuth token."""
     try:
         import gspread
         import google.auth.transport.requests
@@ -192,21 +185,23 @@ def get_sheet_client():
         if os.path.exists("youtube_token.pkl"):
             with open("youtube_token.pkl", "rb") as f:
                 creds = pickle.load(f)
-        if creds and creds.expired and creds.refresh_token:
+        if not creds:
+            log.warning("No token found for sheet")
+            return None
+        if hasattr(creds, "expired") and creds.expired and hasattr(creds, "refresh_token") and creds.refresh_token:
             try:
                 creds.refresh(google.auth.transport.requests.Request())
-                log.info("Sheet token refreshed")
+                log.info("Sheet creds refreshed")
             except Exception as e:
-                log.warning(f"Token refresh: {e}")
-        if not creds or not creds.valid:
-            log.warning("No valid creds for sheet")
+                log.warning(f"Creds refresh failed: {e}")
+        if hasattr(creds, "valid") and not creds.valid:
+            log.warning("Sheet creds not valid")
             return None
-        # Use gspread.authorize() — most compatible method
         gc = gspread.authorize(creds)
-        log.info("Sheet client ready")
+        log.info("Sheet client OK")
         return gc
     except Exception as e:
-        log.warning(f"Sheet client failed: {e}")
+        log.warning(f"Sheet client error: {e}")
         return None
 
 def get_used_topics():
@@ -395,154 +390,14 @@ def get_audio_duration():
         return 420.0
 
 def transcribe_voiceover():
-    """
-    Use faster-whisper to transcribe voiceover.wav.
-    Returns list of word dicts: [{word, start, end}, ...]
-    Falls back to empty list if whisper unavailable.
-    """
-    try:
-        from faster_whisper import WhisperModel
-        log.info("Transcribing voiceover with Whisper...")
-        # base model for long-form — better accuracy than tiny
-        model = WhisperModel("base", device="cpu", compute_type="int8")
-        segments, info = model.transcribe(
-            "voiceover.wav",
-            word_timestamps=True,
-            language="en",
-            beam_size=2,
-            vad_filter=True,
-        )
-        words = []
-        for seg in segments:
-            if seg.words:
-                for w in seg.words:
-                    words.append({
-                        "word":  w.word.strip(),
-                        "start": round(w.start, 3),
-                        "end":   round(w.end, 3),
-                    })
-        log.info(f"Whisper transcribed: {len(words)} words")
-        return words
-    except ImportError:
-        log.warning("faster-whisper not installed — captions will use script timing")
-        return []
-    except Exception as e:
-        log.warning(f"Whisper failed: {e} — using script timing")
-        return []
+    """Captions removed from long-form — returns empty list."""
+    return []
+
 
 def generate_captions(script, total_duration, hook):
-    """
-    Build captions from Whisper word timestamps — exact sync with voice.
-    Same approach as shorts (proven working) scaled for long-form.
+    """Captions removed from long-form video by design."""
+    return []
 
-    KEY FIX: No words are skipped. Hook is shown as overlay on top of
-    the first caption group — both displayed simultaneously so no
-    words are lost from the Whisper transcript.
-    """
-    word_timings = transcribe_voiceover()
-    captions     = []
-
-    if word_timings:
-        log.info(f"Building captions from {len(word_timings)} Whisper words")
-
-        # Whisper timestamps are ground truth — use exactly as-is.
-        # No offsets. The audio assembly will be aligned to match.
-        first_word_start = word_timings[0]["start"]
-
-        # Hook shown before first word, ends exactly when speech starts
-        hook_end = first_word_start if first_word_start > 0.5 else 1.0
-        captions.append({
-            "text":  hook,
-            "start": 0.0,
-            "end":   round(hook_end, 3),
-            "color": "gold",
-            "size":  "large"
-        })
-
-        # All words — pure Whisper timestamps, no modification
-        i = 0
-        while i < len(word_timings):
-            gs    = random.choices([3, 4, 4, 5], weights=[20, 40, 25, 15])[0]
-            group = word_timings[i:i+gs]
-            if not group:
-                break
-
-            g_start = group[0]["start"]
-            g_end   = group[-1]["end"]
-            g_words = [w["word"] for w in group]
-            g_text  = " ".join(g_words).strip()
-
-            if not g_text:
-                i += gs
-                continue
-
-            # Minimum display 0.5s — match natural speech pace
-            if g_end - g_start < 0.5:
-                g_end = g_start + 0.5
-
-            # Cap exactly at next word start — no gap, no overlap
-            if i + gs < len(word_timings):
-                g_end = min(g_end, word_timings[i+gs]["start"] - 0.02)
-
-            g_end = min(g_end, total_duration - 0.05)
-            if g_end <= g_start:
-                i += gs
-                continue
-
-            has_kw = any(
-                w.lower().strip(".,!?;:") in CAPTION_KEYWORDS
-                for w in g_words
-            )
-            color = "gold" if (has_kw and random.random() < 0.25) else "white"
-
-            captions.append({
-                "text":  g_text,
-                "start": round(g_start, 3),
-                "end":   round(g_end, 3),
-                "color": color,
-                "size":  "large"
-            })
-            i += gs
-
-        log.info(f"Captions from Whisper: {len(captions)} total")
-
-    else:
-        # Fallback — evenly distribute actual script words
-        log.warning("No Whisper timings — using script word distribution")
-        words = script.split()
-        wdur  = total_duration / max(len(words), 1)
-
-        # Hook first
-        captions.append({
-            "text":  hook,
-            "start": 0.5,
-            "end":   min(4.0, len(hook.split()) * wdur * 1.2),
-            "color": "gold",
-            "size":  "large"
-        })
-
-        t  = captions[0]["end"] + 0.1
-        i  = 0
-        gs = 4
-        while i < len(words) and t < total_duration - 1.0:
-            group = words[i:i+gs]
-            if not group: break
-            cd    = max(1.5, min(4.5, len(group) * wdur))
-            has_kw = any(w.lower().strip(".,!?;:") in CAPTION_KEYWORDS for w in group)
-            captions.append({
-                "text":  " ".join(group),
-                "start": round(t, 2),
-                "end":   round(min(t+cd, total_duration-0.1), 2),
-                "color": "gold" if (has_kw and random.random()<0.25) else "white",
-                "size":  "large"
-            })
-            i += gs
-            t += cd + 0.05
-
-        log.info(f"Fallback captions: {len(captions)} total")
-
-    captions.sort(key=lambda x: x["start"])
-    return captions
 
 # ── FONT SETUP ────────────────────────────────────────
 # Candidate font paths in priority order — covers GitHub Actions,
@@ -1222,10 +1077,8 @@ def write_clip_frames(writer,mtype,path,duration,
         if mtype=="video": frame = get_video_frame(cap,total,i,duration)
         else:              frame = ken_burns(img,t,duration,kb_effect)
 
-        # No fade-in — audio starts at t=0 and captions match audio timestamps
-        # A fade-in would desync captions from voice at the start
-        # if first_clip and i < int(1.5*FPS):
-        #     frame = fade_black(frame,i/(1.5*FPS),fade_in=True)
+        if first_clip and i < int(1.5*FPS):
+            frame = fade_black(frame,i/(1.5*FPS),fade_in=True)
 
         frame = add_dust(frame,seed=i)
 
@@ -1567,15 +1420,21 @@ def generate_thumbnail(topic, title):
     search = clean_topic(topic)
     ai_ok  = False
 
-    # Generate unique seed per video using time + topic
-    # Use time-based seed so every run gets completely different image
-    run_seed   = int(datetime.datetime.now().timestamp()) % 100000
-    style_idx  = run_seed % len(THUMB_STYLES)
-    style      = THUMB_STYLES[style_idx].format(search=search)
+    # Time-based seed — guaranteed different every run
+    run_seed  = int(datetime.datetime.now().timestamp()) % 100000
+    style_idx = run_seed % len(THUMB_STYLES)
 
-    log.info(f"Thumbnail style {style_idx}: {style[:60]}...")
+    # Build prompt from title keywords for relevance to this video
+    stop_words = {"dark","truth","real","hidden","secret","story","history",
+                  "about","from","this","that","with","they","what","when",
+                  "where","were","have","been","into","the","and","for"}
+    title_words = [w.strip("🔴⚠️💀🔥🕵️#") for w in title.split()
+                   if len(w.strip("🔴⚠️💀🔥🕵️#")) > 3
+                   and w.strip("🔴⚠️💀🔥🕵️#").lower() not in stop_words]
+    title_subject = " ".join(title_words[:2]) if title_words else search
+    style = THUMB_STYLES[style_idx].format(search=f"{search} {title_subject}")
+    log.info(f"Thumbnail style {style_idx} seed {run_seed}: {style[:70]}")
 
-    # Try 3 different seeds — stop at first success
     for seed_offset in [0, 3333, 7777]:
         try:
             seed    = run_seed + seed_offset
@@ -1589,7 +1448,7 @@ def generate_thumbnail(topic, title):
                 with open("thumb_base.jpg","wb") as f:
                     f.write(r.content)
                 ai_ok = True
-                log.info(f"AI thumbnail ready (seed {seed}, style {style_idx})")
+                log.info(f"Thumbnail ready: seed={seed} style={style_idx}")
                 break
         except:
             continue
