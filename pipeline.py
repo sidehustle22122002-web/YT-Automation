@@ -1307,7 +1307,7 @@ def upload_video(video_file, title, description, thumbnail_path):
         log.error(f"Upload failed: {e}")
         return None, None
 
-def update_sheet(topic, video_url, title):
+def update_sheet(topic, "PENDING", "GENERATING..."):
     """
     UPDATED: Strictly maps to Columns: A=Topic | B=Date | C=Title | D=URL | E=Status
     """
@@ -1416,7 +1416,7 @@ def main():
 
     if video_url:
         # UPDATED: Maps correctly to Column B (Date), C (Title), D (URL), E (Status)
-        update_sheet(topic, video_url, title)
+        update_sheet(topic, "PENDING", "GENERATING...")
         
         log.info("="*50)
         log.info("PIPELINE COMPLETE")
