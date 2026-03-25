@@ -1315,7 +1315,7 @@ def upload_video(video_file, title, description, thumbnail_path):
 
 def update_sheet(topic, video_url, title):
     """
-    UPDATED: Strictly maps to Columns: A=Topic | B=Date | C=Title | D=URL | E=Status
+    UPDATED: Strictly maps to Columns: A=topic | B=date/time | C=title | D=video_url | E=status
     """
     try:
         gc = get_sheet_client()
@@ -1366,8 +1366,8 @@ def main():
     used  = get_used_topics()
     topic = select_topic(used)
     facts = get_facts(topic)
-    hook  = generate_hook(topic,facts)
-    update_sheet(topic, "PENDING", "PENDING") # Use the existing function
+    hook = generate_hook(topic, facts)
+    update_sheet(topic, "PENDING", "GENERATING...")
 
     # Section 2 — Script
     log.info("── SECTION 2: SCRIPT ──")
@@ -1420,8 +1420,8 @@ def main():
     # Pass the unique path to the upload service
     video_id, video_url = upload_video(output_file, title, description, thumbnail_path)
 
-    if video_url:
-    update_sheet(topic, video_url, title)
+if video_url:
+        update_sheet(topic, video_url, title)
         
         log.info("="*50)
         log.info("PIPELINE COMPLETE")
