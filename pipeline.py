@@ -1307,7 +1307,7 @@ def upload_video(video_file, title, description, thumbnail_path):
         log.error(f"Upload failed: {e}")
         return None, None
 
-def update_sheet(topic, "PENDING", "GENERATING..."):
+def update_sheet(topic, video_url, title):
     """
     UPDATED: Strictly maps to Columns: A=Topic | B=Date | C=Title | D=URL | E=Status
     """
@@ -1361,7 +1361,7 @@ def main():
     topic = select_topic(used)
     facts = get_facts(topic)
     hook  = generate_hook(topic,facts)
-    save_topic_to_sheet(topic)
+    update_sheet(topic, "PENDING", "PENDING") # Use the existing function
 
     # Section 2 — Script
     log.info("── SECTION 2: SCRIPT ──")
