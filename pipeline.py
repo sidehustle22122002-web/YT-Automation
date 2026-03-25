@@ -373,9 +373,96 @@ def transcribe_voiceover():
         log.error(f"Whisper failed: {e}. Falling back to char-ratio sync.")
         return []
 
+def identify_key_moments(script):
+    """
+    Identify 3-5 crucial sentences where captions should appear.
+    Uses AI to find the most shocking/important moments.
+    """
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_KEY)
+        
+        # Get first ~1500 chars of script for analysis
+        script_sample = script[:1500]
+        
+        prompt = f"""Analyze this dark history script and identify 3-5 CRUCIAL sentences that summarize the core shocking truth.
+
+Script: {script_sample}
+
+Important: Return ONLY a JSON array of sentence START INDICES where captions should appear, like:
+[0, 5, 12, 18]
+
+These should be the most shocking/important moments. Do NOT explain, just return the JSON array."""
+        
+        r = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=100
+        )
+        
+        result = r.choices[0].message.content.strip()
+        
+        # Try to parse JSON
+        try:
+            # Clean up response (remove markdown if present)
+            result = result.replace("```json", "").replace("```", "").strip()
+            key_indices = json.loads(result)
+            
+            if isinstance(key_indices, list) and len(key_indices) > 0:
+                log.info(f"✅ Key caption moments identified: {key_indices}")
+                return key_indices
+            else:
+                log.warning(f"Invalid key moments format: {result}")
+                return []
+        except json.JSONDecodeError:
+            log.warning(f"Could not parse key moments JSON: {result}")
+            # Fallback: mark every 4th caption
+            return []
+    
+    except Exception as e:
+        log.error(f"❌ Key moment detection failed: {e}")
+        return []
+
+
+def mark_captions_by_keywords(captions):
+    """
+    ALTERNATIVE METHOD: Mark captions based on crucial keywords.
+    Use this if AI detection is unreliable.
+    """
+    crucial_keywords = CAPTION_KEYWORDS  # Already defined in your code
+    
+    rendered_count = 0
+    for cap in captions:
+        text_upper = cap["text"].upper()
+        # Check if caption contains any crucial keywords
+        has_crucial = any(kw.upper() in text_upper for kw in crucial_keywords)
+        cap["render"] = has_crucial
+        
+        if has_crucial:
+            rendered_count += 1
+    
+    log.info(f"✅ Marked {rendered_count}/{len(captions)} captions by keywords")
+    return captions
+
+
+def mark_key_captions(captions, key_moment_indices):
+    """
+    Mark which captions are at key moments for selective rendering.
+    """
+    for i, cap in enumerate(captions):
+        cap["is_key"] = i in key_moment_indices
+        cap["render"] = i in key_moment_indices
+    
+    rendered_count = sum(1 for c in captions if c.get('render', False))
+    log.info(f"✅ Marked {rendered_count}/{len(captions)} captions as key moments")
+    return captions
+
+
 def generate_captions(script, total_duration, hook):
     """
-    FIXED: Now includes 'color' and 'size' keys to prevent KeyError.
+    FIXED: Now includes 'render' flag for selective caption display.
+    Captions are generated but marked for selective rendering.
     """
     words = transcribe_voiceover()
     
@@ -392,8 +479,9 @@ def generate_captions(script, total_duration, hook):
                 "text": s.strip().upper(), 
                 "start": curr, 
                 "end": curr + dur,
-                "color": "white",  # Added default color
-                "size": "medium"   # Added default size
+                "color": "white",
+                "size": "medium",
+                "render": False  # ← Will be set by mark_key_captions()
             })
             curr += dur
         return captions
@@ -408,9 +496,11 @@ def generate_captions(script, total_duration, hook):
             "text": text,
             "start": chunk[0]["start"],
             "end": chunk[-1]["end"],
-            "color": "white",  # Added default color
-            "size": "medium"   # Added default size
+            "color": "white",
+            "size": "medium",
+            "render": False  # ← Will be set by mark_key_captions()
         })
+    
     return captions
 
 # ── FONT SETUP (No Changes Required) ──────────────────
@@ -524,12 +614,21 @@ def render_caption(frame, text, color_name, size_name, progress):
     return np.array(img.convert("RGB"))
 
 def get_caption_at_time(captions, t):
+    """
+    FIXED: Only return captions marked for rendering.
+    This prevents captions from showing on every frame.
+    """
     for cap in captions:
+        # ← KEY FIX: Check if this caption should be rendered
+        if not cap.get("render", False):
+            continue
+            
         if cap["start"] <= t <= cap["end"]:
             dur  = cap["end"] - cap["start"]
             prog = (t - cap["start"]) / dur if dur > 0 else 0.5
             return cap, prog
-    return None, 0.0
+    
+    return None, 0.0  # Return None if no key caption at this time
 
 # ══════════════════════════════════════════════════════
 # SECTION 5 — VISUAL ASSETS
@@ -1235,34 +1334,153 @@ def get_thumbnail_words(title):
     words = [w for w in clean.split() if w.lower() not in stop and len(w) > 2]
     return words[:3]
 
+def generate_random_hook():
+    """
+    Generate a random hook phrase for thumbnail variety.
+    Ensures each thumbnail has unique emotional impact.
+    """
+    hooks = [
+        "THE TRUTH",
+        "DARK SECRETS",
+        "HIDDEN HISTORY",
+        "UNTOLD STORY",
+        "FORBIDDEN TRUTH",
+        "LOST HISTORY",
+        "BURIED SECRETS",
+        "DARK REALITY",
+        "SHOCKING TRUTH",
+        "ANCIENT EVIL",
+        "THE MYSTERY",
+        "DARK PAST",
+        "HIDDEN EVIL",
+        "TRUE STORY",
+        "EXPOSED",
+    ]
+    return random.choice(hooks)
+
+
 def generate_thumbnail(topic, title):
     """
-    UPDATED: Uses a unique filename to prevent YouTube cache issues.
+    FIXED: Creates unique thumbnails with variable content.
+    - Different hook phrases per video
+    - Dynamic background colors
+    - Random seed ensures variety
+    - Big, bold font for hook title
     """
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
+    
     log.info("Generating unique thumbnail...")
     
-    # Create unique name using timestamp
-    unique_id = int(time.time())
+    # Create unique name using timestamp + random seed
+    unique_id = int(time.time() * 1000) % 1000000
     final_thumb_path = f"thumb_{unique_id}.jpg"
     
-    # [Your existing Pollinations AI / PIL Overlay Logic here]
-    # For brevity, I am assuming the logic remains the same but saves to final_thumb_path
-    
     try:
-        # Simulate your drawing process...
-        img = Image.new("RGB", (1280, 720), color=(15, 5, 5))
-        d = ImageDraw.Draw(img)
-        words = get_thumbnail_words(title)
-        text = " ".join(words).upper()
-        # [Simplified drawing for the snippet]
-        d.text((100, 300), text, fill=(212, 175, 55))
+        # Extract key words from title
+        title_words = get_thumbnail_words(title)
+        main_text = " ".join(title_words).upper()[:40]  # Limit to 40 chars
         
+        # Get a random hook for variety
+        hook_text = generate_random_hook()
+        
+        # Dynamic background colors (varies per video)
+        bg_colors = [
+            (15, 5, 5),      # Dark red
+            (10, 10, 20),    # Dark blue
+            (20, 10, 15),    # Dark purple
+            (15, 15, 5),     # Dark yellow-brown
+            (5, 15, 10),     # Dark teal
+            (20, 5, 10),     # Dark magenta
+        ]
+        bg_color = random.choice(bg_colors)
+        
+        # Create base image (1280x720 for YouTube thumbnail standard)
+        img = Image.new("RGB", (1280, 720), color=bg_color)
+        d = ImageDraw.Draw(img)
+        
+        # Get fonts
+        font_hook = get_font(70, bold=True)     # Hook: smaller, bold
+        font_main = get_font(110, bold=True)    # Main title: HUGE
+        font_sub = get_font(40, bold=False)     # Subtitle/channel
+        
+        # Define colors
+        gold = (212, 175, 55)
+        white = (235, 235, 235)
+        red = (240, 60, 60)
+        
+        # ═══ DRAW HOOK TEXT (Top) ═══
+        hook_bbox = d.textbbox((0, 0), hook_text, font=font_hook)
+        hook_width = hook_bbox[2] - hook_bbox[0]
+        hook_x = (1280 - hook_width) // 2
+        
+        # Draw hook with black outline for pop
+        for adj_x in [-3, -2, -1, 1, 2, 3]:
+            for adj_y in [-3, -2, -1, 1, 2, 3]:
+                d.text((hook_x + adj_x, 35 + adj_y), hook_text, 
+                       fill=(0, 0, 0), font=font_hook)
+        d.text((hook_x, 35), hook_text, fill=red, font=font_hook)
+        
+        # ═══ DRAW MAIN TITLE (Center) - BIGGEST FONT ═══
+        # Split into 2 lines if too long
+        if len(main_text) > 20:
+            words_main = main_text.split()
+            mid = len(words_main) // 2
+            line1 = " ".join(words_main[:mid])
+            line2 = " ".join(words_main[mid:])
+            lines = [line1, line2]
+        else:
+            lines = [main_text]
+        
+        # Calculate total height for centering
+        total_height = len(lines) * 130
+        start_y = (720 - total_height) // 2 + 50
+        
+        for line_idx, line in enumerate(lines):
+            line_y = start_y + (line_idx * 130)
+            line_bbox = d.textbbox((0, 0), line, font=font_main)
+            line_width = line_bbox[2] - line_bbox[0]
+            line_x = (1280 - line_width) // 2
+            
+            # Draw outline
+            for adj_x in [-5, -3, -1, 1, 3, 5]:
+                for adj_y in [-5, -3, -1, 1, 3, 5]:
+                    d.text((line_x + adj_x, line_y + adj_y), line, 
+                           fill=(0, 0, 0), font=font_main)
+            
+            # Draw main text
+            d.text((line_x, line_y), line, fill=gold, font=font_main)
+        
+        # ═══ ADD DECORATIVE ACCENTS (varies per video) ═══
+        num_lines = random.randint(2, 4)
+        for i in range(num_lines):
+            y_pos = 150 + (i * 120)
+            d.line([(80, y_pos), (1200, y_pos)], fill=gold, width=3)
+        
+        # ═══ ADD CHANNEL NAME (Bottom) ═══
+        tagline = "DarkHistoryMind"
+        tagline_bbox = d.textbbox((0, 0), tagline, font=font_sub)
+        tagline_width = tagline_bbox[2] - tagline_bbox[0]
+        tagline_x = (1280 - tagline_width) // 2
+        
+        # Tagline with subtle outline
+        for adj in [-1, 1]:
+            for adj_y in [-1, 1]:
+                d.text((tagline_x + adj, 650 + adj_y), tagline, 
+                       fill=(0, 0, 0), font=font_sub)
+        d.text((tagline_x, 650), tagline, fill=white, font=font_sub)
+        
+        # ═══ SAVE THUMBNAIL ═══
         img.save(final_thumb_path, quality=98)
-        log.info(f"Unique thumbnail saved: {final_thumb_path}")
+        log.info(f"✅ Unique thumbnail: {final_thumb_path}")
+        log.info(f"   Hook: {hook_text}")
+        log.info(f"   Title: {main_text}")
+        log.info(f"   BG Color: {bg_color}")
         return final_thumb_path
+        
     except Exception as e:
-        log.error(f"Thumbnail generation failed: {e}")
+        log.error(f"❌ Thumbnail generation failed: {e}")
+        import traceback
+        log.error(traceback.format_exc())
         return None
 
 def upload_video(video_file, title, description, thumbnail_path):
@@ -1383,11 +1601,19 @@ def main():
         log.error("Voice generation failed")
         sys.exit(1)
 
-    # Section 4 — Captions
+    # Section 4 — Captions (UPDATED with selective rendering)
     log.info("── SECTION 4: CAPTIONS ──")
     total_duration = get_audio_duration()
-    # Now uses the Whisper-synchronized logic we updated
     captions = generate_captions(script, total_duration, hook)
+    
+    # Identify key moments for selective caption display
+    key_moments = identify_key_moments(script)
+    if key_moments:
+        # Use AI-identified moments
+        captions = mark_key_captions(captions, key_moments)
+    else:
+        # Fallback: Use keyword-based selection
+        captions = mark_captions_by_keywords(captions)
 
     # Section 5 — Assets
     log.info("── SECTION 5: ASSETS ──")
