@@ -1419,8 +1419,8 @@ def main():
     
     # Pass the unique path to the upload service
     video_id, video_url = upload_video(output_file, title, description, thumbnail_path)
-
-if video_url:
+    
+    if video_url:
         update_sheet(topic, video_url, title)
         
         log.info("="*50)
