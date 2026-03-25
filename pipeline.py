@@ -375,8 +375,7 @@ def transcribe_voiceover():
 
 def generate_captions(script, total_duration, hook):
     """
-    REFINED: Groups Whisper word-timings into 5-7 word sentences.
-    If Whisper fails, it uses the character-ratio backup.
+    FIXED: Now includes 'color' and 'size' keys to prevent KeyError.
     """
     words = transcribe_voiceover()
     
@@ -389,7 +388,13 @@ def generate_captions(script, total_duration, hook):
         for s in sentences:
             if not s.strip(): continue
             dur = total_duration * (len(s) / total_chars)
-            captions.append({"text": s.strip().upper(), "start": curr, "end": curr + dur})
+            captions.append({
+                "text": s.strip().upper(), 
+                "start": curr, 
+                "end": curr + dur,
+                "color": "white",  # Added default color
+                "size": "medium"   # Added default size
+            })
             curr += dur
         return captions
 
@@ -402,10 +407,11 @@ def generate_captions(script, total_duration, hook):
         captions.append({
             "text": text,
             "start": chunk[0]["start"],
-            "end": chunk[-1]["end"]
+            "end": chunk[-1]["end"],
+            "color": "white",  # Added default color
+            "size": "medium"   # Added default size
         })
     return captions
-
 
 # ── FONT SETUP (No Changes Required) ──────────────────
 _FONT_CANDIDATES_BOLD = [
