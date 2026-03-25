@@ -1421,8 +1421,7 @@ def main():
     video_id, video_url = upload_video(output_file, title, description, thumbnail_path)
 
     if video_url:
-        # UPDATED: Maps correctly to Column B (Date), C (Title), D (URL), E (Status)
-        update_sheet(topic, "PENDING", "GENERATING...")
+    update_sheet(topic, video_url, title)
         
         log.info("="*50)
         log.info("PIPELINE COMPLETE")
