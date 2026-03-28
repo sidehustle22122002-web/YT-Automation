@@ -179,22 +179,28 @@ def clean_topic(topic):
 def get_sheet_client():
     try:
         import gspread
-        import google.auth.transport.requests
-        creds = None
-        if os.path.exists("youtube_token.pkl"):
-            with open("youtube_token.pkl", "rb") as f:
-                creds = pickle.load(f)
-        if not creds:
+        from google.oauth2.service_account import Credentials
+        
+        if not os.path.exists("client_secrets.json"):
+            log.error("❌ client_secrets.json not found")
             return None
-        if hasattr(creds, "expired") and creds.expired and hasattr(creds, "refresh_token") and creds.refresh_token:
-            try:
-                creds.refresh(google.auth.transport.requests.Request())
-            except Exception as e:
-                log.warning(f"Creds refresh failed: {e}")
-        gc = gspread.authorize(creds)
-        return gc
+        
+        try:
+            creds = Credentials.from_service_account_file(
+                "client_secrets.json",
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"
+                ]
+            )
+            gc = gspread.authorize(creds)
+            log.info("✅ Sheet client: Using service account")
+            return gc
+        except Exception as sa_err:
+            log.error(f"Service account auth failed: {sa_err}")
+            return None
     except Exception as e:
-        log.warning(f"Sheet client error: {e}")
+        log.error(f"❌ Sheet client error: {e}")
         return None
 
 def get_used_topics():
@@ -1361,121 +1367,122 @@ def generate_random_hook():
 
 def generate_thumbnail(topic, title):
     """
-    FIXED: Creates unique thumbnails with variable content.
-    - Different hook phrases per video
-    - Dynamic background colors
-    - Random seed ensures variety
-    - Big, bold font for hook title
+    FIXED: Fetches relevant image + overlays hook text
+    Creates cinematic thumbnail with background image
     """
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFilter
     
-    log.info("Generating unique thumbnail...")
+    log.info("Generating thumbnail with background image...")
     
-    # Create unique name using timestamp + random seed
     unique_id = int(time.time() * 1000) % 1000000
     final_thumb_path = f"thumb_{unique_id}.jpg"
     
     try:
-        # Extract key words from title
-        title_words = get_thumbnail_words(title)
-        main_text = " ".join(title_words).upper()[:40]  # Limit to 40 chars
+        # Fetch relevant background image
+        bg_image = None
+        keywords = get_thumbnail_words(title)
+        search_query = " ".join(keywords[:2]) if keywords else topic
         
-        # Get a random hook for variety
+        # Try Pexels first
+        try:
+            pexels_url = f"https://api.pexels.com/v1/search?query={search_query}&per_page=1&orientation=landscape"
+            r = requests.get(pexels_url, headers={"Authorization": PEXELS_KEY}, timeout=30)
+            if r.status_code == 200:
+                photos = r.json().get("photos", [])
+                if photos:
+                    photo_url = photos[0]["src"]["large"]
+                    img_data = requests.get(photo_url, timeout=30).content
+                    from io import BytesIO
+                    bg_image = Image.open(BytesIO(img_data))
+        except:
+            pass
+        
+        # Fallback: create dark gradient background
+        if bg_image is None:
+            bg_image = Image.new("RGB", (1280, 720), color=(10, 5, 15))
+        
+        # Resize to thumbnail size
+        bg_image = bg_image.resize((1280, 720), Image.LANCZOS)
+        
+        # Darken background for text readability
+        dark_overlay = Image.new("RGBA", bg_image.size, (0, 0, 0, 180))
+        bg_image = bg_image.convert("RGBA")
+        bg_image = Image.alpha_composite(bg_image, dark_overlay)
+        bg_image = bg_image.convert("RGB")
+        
+        # Get hook text
+        title_words = get_thumbnail_words(title)
+        main_text = " ".join(title_words).upper()[:35]
         hook_text = generate_random_hook()
         
-        # Dynamic background colors (varies per video)
-        bg_colors = [
-            (15, 5, 5),      # Dark red
-            (10, 10, 20),    # Dark blue
-            (20, 10, 15),    # Dark purple
-            (15, 15, 5),     # Dark yellow-brown
-            (5, 15, 10),     # Dark teal
-            (20, 5, 10),     # Dark magenta
-        ]
-        bg_color = random.choice(bg_colors)
+        # Draw on image
+        d = ImageDraw.Draw(bg_image)
+        font_hook = get_font(80)
+        font_main = get_font(120)
         
-        # Create base image (1280x720 for YouTube thumbnail standard)
-        img = Image.new("RGB", (1280, 720), color=bg_color)
-        d = ImageDraw.Draw(img)
-        
-        # Get fonts
-        font_hook = get_font(70, bold=True)     # Hook: smaller, bold
-        font_main = get_font(110, bold=True)    # Main title: HUGE
-        font_sub = get_font(40, bold=False)     # Subtitle/channel
-        
-        # Define colors
         gold = (212, 175, 55)
         white = (235, 235, 235)
         red = (240, 60, 60)
         
-        # ═══ DRAW HOOK TEXT (Top) ═══
+        # Draw hook (top)
         hook_bbox = d.textbbox((0, 0), hook_text, font=font_hook)
         hook_width = hook_bbox[2] - hook_bbox[0]
         hook_x = (1280 - hook_width) // 2
         
-        # Draw hook with black outline for pop
         for adj_x in [-3, -2, -1, 1, 2, 3]:
             for adj_y in [-3, -2, -1, 1, 2, 3]:
-                d.text((hook_x + adj_x, 35 + adj_y), hook_text, 
-                       fill=(0, 0, 0), font=font_hook)
-        d.text((hook_x, 35), hook_text, fill=red, font=font_hook)
+                d.text((hook_x + adj_x, 80 + adj_y), hook_text, fill=(0, 0, 0), font=font_hook)
+        d.text((hook_x, 80), hook_text, fill=red, font=font_hook)
         
-        # ═══ DRAW MAIN TITLE (Center) - BIGGEST FONT ═══
-        # Split into 2 lines if too long
+        # Draw main title (center)
         if len(main_text) > 20:
-            words_main = main_text.split()
-            mid = len(words_main) // 2
-            line1 = " ".join(words_main[:mid])
-            line2 = " ".join(words_main[mid:])
+            words = main_text.split()
+            mid = len(words) // 2
+            line1 = " ".join(words[:mid])
+            line2 = " ".join(words[mid:])
             lines = [line1, line2]
         else:
             lines = [main_text]
         
-        # Calculate total height for centering
-        total_height = len(lines) * 130
+        total_height = len(lines) * 140
         start_y = (720 - total_height) // 2 + 50
         
         for line_idx, line in enumerate(lines):
-            line_y = start_y + (line_idx * 130)
+            line_y = start_y + (line_idx * 140)
             line_bbox = d.textbbox((0, 0), line, font=font_main)
             line_width = line_bbox[2] - line_bbox[0]
             line_x = (1280 - line_width) // 2
             
-            # Draw outline
             for adj_x in [-5, -3, -1, 1, 3, 5]:
                 for adj_y in [-5, -3, -1, 1, 3, 5]:
-                    d.text((line_x + adj_x, line_y + adj_y), line, 
-                           fill=(0, 0, 0), font=font_main)
+                    d.text((line_x + adj_x, line_y + adj_y), line, fill=(0, 0, 0), font=font_main)
             
-            # Draw main text
             d.text((line_x, line_y), line, fill=gold, font=font_main)
         
-        # ═══ ADD DECORATIVE ACCENTS (varies per video) ═══
-        num_lines = random.randint(2, 4)
-        for i in range(num_lines):
-            y_pos = 150 + (i * 120)
-            d.line([(80, y_pos), (1200, y_pos)], fill=gold, width=3)
-        
-        # ═══ ADD CHANNEL NAME (Bottom) ═══
-        tagline = "DarkHistoryMind"
-        tagline_bbox = d.textbbox((0, 0), tagline, font=font_sub)
+        # Add channel name (bottom)
+        tagline = CHANNEL_NAME
+        tagline_bbox = d.textbbox((0, 0), tagline, font=get_font(40))
         tagline_width = tagline_bbox[2] - tagline_bbox[0]
         tagline_x = (1280 - tagline_width) // 2
+        d.text((tagline_x, 650), tagline, fill=white, font=get_font(40))
         
-        # Tagline with subtle outline
-        for adj in [-1, 1]:
-            for adj_y in [-1, 1]:
-                d.text((tagline_x + adj, 650 + adj_y), tagline, 
-                       fill=(0, 0, 0), font=font_sub)
-        d.text((tagline_x, 650), tagline, fill=white, font=font_sub)
-        
-        # ═══ SAVE THUMBNAIL ═══
-        img.save(final_thumb_path, quality=98)
-        log.info(f"✅ Unique thumbnail: {final_thumb_path}")
-        log.info(f"   Hook: {hook_text}")
-        log.info(f"   Title: {main_text}")
-        log.info(f"   BG Color: {bg_color}")
+        bg_image.save(final_thumb_path, quality=98)
+        log.info(f"✅ Thumbnail with image: {final_thumb_path}")
         return final_thumb_path
+        
+    except Exception as e:
+        log.error(f"❌ Thumbnail generation failed: {e}")
+        # Fallback: create simple text-only thumbnail
+        try:
+            fallback = Image.new("RGB", (1280, 720), color=(15, 5, 5))
+            d = ImageDraw.Draw(fallback)
+            hook_text = generate_random_hook()
+            font = get_font(100)
+            d.text((100, 300), hook_text, fill=(212, 175, 55), font=font)
+            fallback.save(final_thumb_path, quality=98)
+            return final_thumb_path
+        except:
+            return None
         
     except Exception as e:
         log.error(f"❌ Thumbnail generation failed: {e}")
@@ -1533,16 +1540,35 @@ def upload_video(video_file, title, description, thumbnail_path):
 
 def update_sheet(topic, video_url, title):
     """
-    UPDATED: Strictly maps to Columns: A=topic | B=date/time | C=title | D=video_url | E=status
+    FIXED: Proper service account auth + detailed error logging
+    Maps to Columns: A=topic | B=date/time | C=title | D=video_url | E=status
     """
     try:
-        gc = get_sheet_client()
-        if not gc: return
-        sh = gc.open_by_key(SHEET_ID)
-        ws = sh.get_worksheet(0)
+        log.info(f"Updating sheet for topic: {topic}")
         
-        # Find row by topic
-        col_topics = ws.col_values(1)
+        gc = get_sheet_client()
+        if not gc:
+            log.error("❌ Sheet client unavailable")
+            return False
+        
+        try:
+            sh = gc.open_by_key(SHEET_ID)
+        except Exception as open_err:
+            log.error(f"❌ Cannot open sheet {SHEET_ID}: {open_err}")
+            return False
+        
+        try:
+            ws = sh.get_worksheet(0)
+        except Exception as ws_err:
+            log.error(f"❌ Cannot get worksheet: {ws_err}")
+            return False
+        
+        try:
+            col_topics = ws.col_values(1)
+        except Exception as col_err:
+            log.error(f"❌ Cannot read column A: {col_err}")
+            return False
+        
         row_idx = None
         for i, val in enumerate(col_topics):
             if val and val.strip().lower() == topic.strip().lower():
@@ -1553,16 +1579,29 @@ def update_sheet(topic, video_url, title):
         status = "Scheduled" if not TEST_MODE else "Private/Test"
         
         if row_idx:
-            # Update columns B, C, D, E
-            ws.update(f"B{row_idx}:E{row_idx}", [[now, title, video_url, status]])
-            log.info(f"Sheet updated row {row_idx}")
+            try:
+                ws.update(f"B{row_idx}:E{row_idx}", [[now, title, video_url, status]])
+                log.info(f"✅ Sheet updated: Row {row_idx}")
+                log.info(f"   Topic: {topic}")
+                log.info(f"   URL: {video_url}")
+                return True
+            except Exception as update_err:
+                log.error(f"❌ Failed to update row {row_idx}: {update_err}")
+                return False
         else:
-            # Append new row if topic not found
-            ws.append_row([topic, now, title, video_url, status])
-            log.info("Sheet new row appended")
+            try:
+                ws.append_row([topic, now, title, video_url, status])
+                log.info(f"✅ Sheet: New row appended")
+                log.info(f"   Topic: {topic}")
+                log.info(f"   URL: {video_url}")
+                return True
+            except Exception as append_err:
+                log.error(f"❌ Failed to append row: {append_err}")
+                return False
             
     except Exception as e:
-        log.warning(f"Sheet update failed: {e}")
+        log.error(f"❌ Unexpected sheet error: {e}")
+        return False
 
 # ══════════════════════════════════════════════════════
 # MAIN — RUN ALL SECTIONS (UPDATED)
