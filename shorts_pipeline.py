@@ -303,6 +303,37 @@ def render_caption(frame, text, progress):
 # ══════════════════════════════════════════════════════
 # SECTION 6 — ASSEMBLY (Video-Heavy Mix)
 # ══════════════════════════════════════════════════════
+def apply_cinematic_effects(frame, t, dur):
+    """Apply cinematic effects: zoom, vignette, color grading"""
+    import cv2
+    
+    # Ken Burns zoom effect (slow pan/zoom)
+    zoom_factor = 1.0 + (0.15 * np.sin(t * np.pi / dur))
+    h, w = frame.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    
+    # Create zoom matrix
+    zoom_matrix = cv2.getRotationMatrix2D((center_x, center_y), 0, zoom_factor)
+    frame = cv2.warpAffine(frame, zoom_matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    # Add vignette (dark edges)
+    kernel_x = cv2.getGaussianKernel(w, w/3)
+    kernel_y = cv2.getGaussianKernel(h, h/3)
+    kernel = kernel_y @ kernel_x.T
+    mask = (kernel / kernel.max() * 255).astype(np.uint8)
+    mask = np.dstack([mask] * 3)
+    
+    frame = cv2.addWeighted(frame, 0.95, np.zeros_like(frame), 0, 0)
+    vignette = (frame.astype(float) * (mask.astype(float) / 255)).astype(np.uint8)
+    frame = cv2.addWeighted(frame, 0.85, vignette, 0.15, 0)
+    
+    # Subtle color grading (cool tones for mystical feel)
+    frame[:, :, 0] = np.clip(frame[:, :, 0] * 1.1, 0, 255)  # Blue boost
+    frame[:, :, 1] = np.clip(frame[:, :, 1] * 0.95, 0, 255)  # Green slight reduce
+    frame[:, :, 2] = np.clip(frame[:, :, 2] * 0.9, 0, 255)   # Red reduce
+    
+    return frame.astype(np.uint8)
+
 def assemble(assets, captions, dur, out_file):
     import cv2
     writer = cv2.VideoWriter(out_file, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (SW, SH))
@@ -320,9 +351,14 @@ def assemble(assets, captions, dur, out_file):
     if not pool: return False
     
     vi = 0
+    last_path = None
+    transition_progress = 0.0
+    transition_frame = None
+    transition_duration = 0.5  # 0.5 sec transitions
+    transition_frames = int(transition_duration * FPS)
+    
     for frame_idx in range(total_frames):
         path, ftype = pool[vi % len(pool)]
-        vi += 1
         t = frame_idx / FPS
         
         try:
@@ -343,6 +379,24 @@ def assemble(assets, captions, dur, out_file):
             
             frame = cv2.resize(frame, (SW, SH))
             
+            # Apply cinematic effects
+            frame = apply_cinematic_effects(frame, t, dur)
+            
+            # Handle transitions between clips
+            if path != last_path and transition_frame is not None:
+                transition_progress = min(1.0, (frame_idx % transition_frames) / transition_frames)
+                frame = cv2.addWeighted(
+                    transition_frame, 
+                    1.0 - transition_progress,
+                    frame, 
+                    transition_progress,
+                    0
+                )
+            
+            transition_frame = frame.copy()
+            last_path = path
+            
+            # Render captions
             for cap in captions:
                 if cap["start"] <= t <= cap["end"]:
                     prog = (t - cap["start"]) / (cap["end"] - cap["start"]) if (cap["end"] - cap["start"]) > 0 else 0.5
@@ -350,12 +404,17 @@ def assemble(assets, captions, dur, out_file):
                     break
             
             writer.write(frame)
+            
+            # Change clip every 2-3 seconds for dynamic pacing
+            if frame_idx > 0 and frame_idx % int(FPS * random.uniform(2, 3)) == 0:
+                vi += 1
+                
         except Exception as e:
             log.warning(f"Frame {frame_idx}: {e}")
             writer.write(np.zeros((SH, SW, 3), dtype=np.uint8))
     
     writer.release()
-    log.info(f"Video assembled: {out_file}")
+    log.info(f"✅ Video assembled with cinematic effects: {out_file}")
     return os.path.exists(out_file)
 
 # ══════════════════════════════════════════════════════
@@ -406,13 +465,13 @@ def setup_auth():
 # SECTION 9 — UPLOAD + SCHEDULE
 # ══════════════════════════════════════════════════════
 SLOT_SCHEDULE = {
-    0: {"hour": 18, "minute": 30, "days_ahead": 0, "label": "12:00 AM IST — upload day"},
-    1: {"hour": 0, "minute": 30, "days_ahead": 1, "label": "6:00 AM IST — upload day"},
-    2: {"hour": 6, "minute": 30, "days_ahead": 1, "label": "12:00 PM IST — upload day"},
-    3: {"hour": 18, "minute": 30, "days_ahead": 1, "label": "12:00 AM IST — gap day"},
-    4: {"hour": 0, "minute": 30, "days_ahead": 2, "label": "6:00 AM IST — gap day"},
-    5: {"hour": 6, "minute": 30, "days_ahead": 2, "label": "12:00 PM IST — gap day"},
-    6: {"hour": 12, "minute": 30, "days_ahead": 2, "label": "6:00 PM IST — gap day"},
+    0: {"hour": 18, "minute": 30, "days_ahead": -1, "label": "12:00 AM IST — upload day"},
+    1: {"hour": 0, "minute": 30, "days_ahead": 0, "label": "6:00 AM IST — upload day"},
+    2: {"hour": 6, "minute": 30, "days_ahead": 0, "label": "12:00 PM IST — upload day"},
+    3: {"hour": 18, "minute": 30, "days_ahead": 0, "label": "12:00 AM IST — gap day"},
+    4: {"hour": 0, "minute": 30, "days_ahead": 1, "label": "6:00 AM IST — gap day"},
+    5: {"hour": 6, "minute": 30, "days_ahead": 1, "label": "12:00 PM IST — gap day"},
+    6: {"hour": 12, "minute": 30, "days_ahead": 1, "label": "6:00 PM IST — gap day"},
 }
 
 def get_schedule(slot):
