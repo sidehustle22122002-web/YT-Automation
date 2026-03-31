@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ═══════════════════════════════════════════════════════
-# DarkHistoryMind — Shorts Pipeline (Fixed)
+# DarkHistoryMind — Shorts Pipeline (FIXED - Audio + Assets)
 # ═══════════════════════════════════════════════════════
 import os, sys, json, re, random, time, math
 import requests, subprocess, pickle, datetime, logging
@@ -163,7 +163,7 @@ def generate_voice(script):
 
         text = script.get("full_script", "")
         if not text:
-            log.error("No script text for voice generation")
+            log.error("❌ No script text for voice generation")
             return False
 
         log.info("Generating voice...")
@@ -178,6 +178,11 @@ def generate_voice(script):
             await communicate.save("short_voice.mp3")
 
         asyncio.run(speak())
+        
+        if not os.path.exists("short_voice.mp3"):
+            log.error("❌ Voice file not created")
+            return False
+            
         log.info("✅ Voice generated: short_voice.mp3")
         return True
     except Exception as e:
@@ -195,10 +200,10 @@ def get_voice_duration():
         clip = AudioFileClip("short_voice.mp3")
         dur = clip.duration
         clip.close()
-        log.info(f"Voice duration: {dur:.1f} seconds")
+        log.info(f"✅ Voice duration: {dur:.1f} seconds")
         return dur
     except Exception as e:
-        log.error(f"Cannot get voice duration: {e}")
+        log.error(f"❌ Cannot get voice duration: {e}")
         return 0.0
 
 # ══════════════════════════════════════════════════════
@@ -220,42 +225,93 @@ def build_captions(script, dur):
     return captions
 
 # ══════════════════════════════════════════════════════
-# SECTION 4 — ASSETS
+# SECTION 4 — ASSETS (FIXED - Diverse Videos + Images)
 # ══════════════════════════════════════════════════════
-def fetch_assets(topic):
+def fetch_assets(topic, dur):
+    """
+    FIXED: Fetch diverse videos and images based on duration
+    For 35-40 sec short: 5 videos + 5 images
+    For 40-45 sec short: 6 videos + 6 images
+    """
     os.makedirs("shorts_assets/videos", exist_ok=True)
     os.makedirs("shorts_assets/images", exist_ok=True)
     
     assets = {"videos": [], "images": []}
     
-    for i in range(6):
-        url = f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={topic.replace(' ','+')}&per_page=1&order=popular"
+    # Calculate how many assets needed based on duration
+    # Each asset ~7-8 seconds on screen
+    num_videos = max(4, int(dur / 7))
+    num_images = max(3, int(dur / 8))
+    
+    log.info(f"Fetching {num_videos} videos + {num_images} images for {dur:.1f}s duration")
+    
+    # Generate diverse search queries based on topic
+    keywords = topic.split()[:2]  # First 2 words
+    search_variants = [
+        topic,
+        keywords[0] if keywords else topic,
+        f"{topic} history",
+        f"{topic} dark",
+        f"{keywords[0]} facts" if keywords else topic,
+    ]
+    
+    # Fetch DIFFERENT videos using different search queries
+    video_count = 0
+    for search_idx, search_query in enumerate(search_variants):
+        if video_count >= num_videos:
+            break
+        
+        url = f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={search_query.replace(' ','+')}&per_page=5&order=popular"
         try:
             r = requests.get(url, timeout=30)
-            for hit in r.json().get("hits", [])[:1]:
-                vurl = hit["videos"]["medium"]["url"]
-                path = f"shorts_assets/videos/v{i}.mp4"
-                open(path, "wb").write(requests.get(vurl, timeout=60).content)
-                assets["videos"].append(path)
-                log.info(f"  Video {i+1}/6 fetched")
-                break
+            videos = r.json().get("hits", [])
+            
+            # Fetch up to 3 videos per search query
+            for idx, hit in enumerate(videos[:3]):
+                if video_count >= num_videos:
+                    break
+                try:
+                    vurl = hit["videos"]["medium"]["url"]
+                    path = f"shorts_assets/videos/v{video_count}.mp4"
+                    video_data = requests.get(vurl, timeout=60).content
+                    open(path, "wb").write(video_data)
+                    assets["videos"].append(path)
+                    video_count += 1
+                    log.info(f"  Video {video_count}/{num_videos}: {search_query}")
+                except:
+                    pass
         except:
             pass
     
-    for i in range(4):
-        url = f"https://api.pexels.com/v1/search?query={topic}&per_page=1&orientation=portrait"
+    # Fetch DIFFERENT images using different search queries
+    image_count = 0
+    for search_idx, search_query in enumerate(search_variants):
+        if image_count >= num_images:
+            break
+        
+        url = f"https://api.pexels.com/v1/search?query={search_query}&per_page=5&orientation=portrait"
         try:
             r = requests.get(url, headers={"Authorization": PEXELS_KEY}, timeout=30)
-            for photo in r.json().get("photos", [])[:1]:
-                path = f"shorts_assets/images/img{i}.jpg"
-                open(path, "wb").write(requests.get(photo["src"]["large2x"], timeout=60).content)
-                assets["images"].append(path)
-                log.info(f"  Image {i+1}/4 fetched")
-                break
+            photos = r.json().get("photos", [])
+            
+            # Fetch up to 2 images per search query
+            for idx, photo in enumerate(photos[:2]):
+                if image_count >= num_images:
+                    break
+                try:
+                    path = f"shorts_assets/images/img{image_count}.jpg"
+                    img_data = requests.get(photo["src"]["large2x"], timeout=60).content
+                    open(path, "wb").write(img_data)
+                    assets["images"].append(path)
+                    image_count += 1
+                    log.info(f"  Image {image_count}/{num_images}: {search_query}")
+                except:
+                    pass
         except:
             pass
-
-    return assets if (assets["videos"] or assets["images"]) else None
+    
+    log.info(f"✅ Fetched {len(assets['videos'])} videos + {len(assets['images'])} images")
+    return assets if (assets["videos"] and assets["images"]) else None
 
 # ══════════════════════════════════════════════════════
 # SECTION 5 — CAPTIONS RENDERING
@@ -313,22 +369,19 @@ def render_caption(frame, text, progress):
     return np.array(img.convert("RGB"))
 
 # ══════════════════════════════════════════════════════
-# SECTION 6 — ASSEMBLY (WITH CINEMATIC EFFECTS)
+# SECTION 6 — ASSEMBLY (WITH CINEMATIC EFFECTS + AUDIO)
 # ══════════════════════════════════════════════════════
 def apply_cinematic_effects(frame, t, dur):
     """Apply cinematic effects: zoom, vignette, color grading"""
     import cv2
     
-    # Ken Burns zoom effect (slow pan/zoom)
     zoom_factor = 1.0 + (0.15 * np.sin(t * np.pi / dur))
     h, w = frame.shape[:2]
     center_x, center_y = w // 2, h // 2
     
-    # Create zoom matrix
     zoom_matrix = cv2.getRotationMatrix2D((center_x, center_y), 0, zoom_factor)
     frame = cv2.warpAffine(frame, zoom_matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
     
-    # Add vignette (dark edges)
     kernel_x = cv2.getGaussianKernel(w, w/3)
     kernel_y = cv2.getGaussianKernel(h, h/3)
     kernel = kernel_y @ kernel_x.T
@@ -339,21 +392,29 @@ def apply_cinematic_effects(frame, t, dur):
     vignette = (frame.astype(float) * (mask.astype(float) / 255)).astype(np.uint8)
     frame = cv2.addWeighted(frame, 0.85, vignette, 0.15, 0)
     
-    # Subtle color grading (cool tones for mystical feel)
-    frame[:, :, 0] = np.clip(frame[:, :, 0] * 1.1, 0, 255)  # Blue boost
-    frame[:, :, 1] = np.clip(frame[:, :, 1] * 0.95, 0, 255)  # Green slight reduce
-    frame[:, :, 2] = np.clip(frame[:, :, 2] * 0.9, 0, 255)   # Red reduce
+    frame[:, :, 0] = np.clip(frame[:, :, 0] * 1.1, 0, 255)
+    frame[:, :, 1] = np.clip(frame[:, :, 1] * 0.95, 0, 255)
+    frame[:, :, 2] = np.clip(frame[:, :, 2] * 0.9, 0, 255)
     
     return frame.astype(np.uint8)
 
 def assemble(assets, captions, dur, out_file):
+    """
+    FIXED: Creates video, mixes with audio, aligns assets with duration
+    """
     import cv2
-    writer = cv2.VideoWriter(out_file, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (SW, SH))
+    
+    log.info("Assembling video with assets and effects...")
+    
+    # Create temporary video without audio
+    temp_video = "temp_video.mp4"
+    writer = cv2.VideoWriter(temp_video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (SW, SH))
     
     total_frames = int(dur * FPS)
     videos = assets.get("videos", [])
     images = assets.get("images", [])
     
+    # Create smart pool: mix videos and images, more videos than images
     pool = []
     if videos:
         pool.extend([(v, "video") for v in videos] * 2)
@@ -361,12 +422,13 @@ def assemble(assets, captions, dur, out_file):
         pool.extend([(i, "image") for i in images])
     
     if not pool:
-        log.error("No assets in pool")
+        log.error("❌ No assets in pool")
         return False
     
+    # Distribute assets evenly across duration
+    asset_duration = dur / len(pool)
     vi = 0
     last_path = None
-    transition_progress = 0.0
     transition_frame = None
     transition_duration = 0.5
     transition_frames = int(transition_duration * FPS)
@@ -392,11 +454,9 @@ def assemble(assets, captions, dur, out_file):
                 if frame is None: frame = np.zeros((SH, SW, 3), dtype=np.uint8)
             
             frame = cv2.resize(frame, (SW, SH))
-            
-            # Apply cinematic effects
             frame = apply_cinematic_effects(frame, t, dur)
             
-            # Handle transitions between clips
+            # Handle transitions
             if path != last_path and transition_frame is not None:
                 transition_progress = min(1.0, (frame_idx % transition_frames) / transition_frames)
                 frame = cv2.addWeighted(
@@ -419,8 +479,8 @@ def assemble(assets, captions, dur, out_file):
             
             writer.write(frame)
             
-            # Change clip every 2-3 seconds
-            if frame_idx > 0 and frame_idx % int(FPS * random.uniform(2, 3)) == 0:
+            # Change asset based on duration distribution
+            if frame_idx > 0 and frame_idx % int(asset_duration * FPS) == 0:
                 vi += 1
                 
         except Exception as e:
@@ -428,8 +488,56 @@ def assemble(assets, captions, dur, out_file):
             writer.write(np.zeros((SH, SW, 3), dtype=np.uint8))
     
     writer.release()
-    log.info(f"✅ Video assembled with cinematic effects: {out_file}")
-    return os.path.exists(out_file)
+    log.info(f"✅ Video assembled (without audio): {temp_video}")
+    
+    # ══════════════════════════════════════════════════════
+    # MIX AUDIO INTO VIDEO (CRITICAL FIX)
+    # ══════════════════════════════════════════════════════
+    try:
+        from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
+        
+        log.info("Mixing audio into video...")
+        
+        # Load video and audio
+        video = VideoFileClip(temp_video)
+        audio = AudioFileClip("short_voice.mp3")
+        
+        # Set audio to video
+        final_video = video.set_audio(audio)
+        
+        # Write final video with audio
+        final_video.write_videofile(
+            out_file,
+            codec='libx264',
+            audio_codec='aac',
+            verbose=False,
+            logger=None
+        )
+        
+        # Cleanup
+        video.close()
+        audio.close()
+        final_video.close()
+        
+        # Remove temporary file
+        if os.path.exists(temp_video):
+            os.remove(temp_video)
+        
+        log.info(f"✅ Final video with audio: {out_file}")
+        return os.path.exists(out_file)
+        
+    except Exception as e:
+        log.error(f"❌ Audio mixing failed: {e}")
+        import traceback
+        log.error(traceback.format_exc())
+        
+        # Fallback: rename temp video without audio
+        if os.path.exists(temp_video):
+            os.rename(temp_video, out_file)
+            log.warning(f"⚠️  Using video without audio as fallback")
+            return True
+        
+        return False
 
 # ══════════════════════════════════════════════════════
 # SECTION 7 — METADATA
@@ -530,14 +638,14 @@ def upload(video_file, seo, thumbnail, offset=0):
             st, response = request.next_chunk()
             if st: log.info(f"  {int(st.progress()*100)}%")
         vid = response["id"]; url = f"https://youtube.com/watch?v={vid}"
-        log.info(f"Uploaded: {url}")
+        log.info(f"✅ Uploaded: {url}")
         try:
             yt.thumbnails().set(videoId=vid, media_body=MediaFileUpload(thumbnail)).execute()
-            log.info("Thumbnail set")
+            log.info("✅ Thumbnail set")
         except Exception as e: log.warning(f"Thumb: {e}")
         return vid, url
     except Exception as e:
-        log.error(f"Upload failed: {e}")
+        log.error(f"❌ Upload failed: {e}")
         return None, None
 
 # ══════════════════════════════════════════════════════
@@ -608,9 +716,10 @@ def run_short(topic, num, offset=0):
 
     captions = build_captions(script, dur)
 
-    assets = fetch_assets(topic)
+    # FIXED: Pass duration to fetch_assets for proper asset count
+    assets = fetch_assets(topic, dur)
     if not assets:
-        log.error(f"No assets found for {topic}")
+        log.error(f"❌ No assets found for {topic}")
         return None
 
     safe_topic = re.sub(r'[^\w\s]', '', topic).strip().replace(' ', '_')[:30]
@@ -631,7 +740,7 @@ def run_short(topic, num, offset=0):
             log.info(f"✅ Short #{num} Published: {url}")
             return url
     except Exception as e:
-        log.error(f"Upload/Sheet phase failed: {e}")
+        log.error(f"❌ Upload/Sheet phase failed: {e}")
     
     return None
 
