@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # ═══════════════════════════════════════════════════════════════════════════
-# DarkHistoryMind — VIRAL SHORTS PIPELINE (Professional Grade)
-# Designed for maximum engagement, retention, and viral potential
-# 45-50 second shorts with professional SEO and human-touch editing
+# DarkHistoryMind — DAILY SHORTS PIPELINE (4 Shorts Per Day)
+# Pure automation: Runs daily, uploads 4 shorts at IST: 12 AM, 6 AM, 12 PM, 6 PM
 # ═══════════════════════════════════════════════════════════════════════════
 import os, sys, json, re, random, time, math
 import requests, subprocess, pickle, datetime, logging
@@ -18,14 +17,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-GROQ_KEY          = os.environ["GROQ_KEY"]
-PEXELS_KEY        = os.environ["PEXELS_KEY"]
-PIXABAY_KEY       = os.environ["PIXABAY_KEY"]
-GDRIVE_SECRETS_ID = os.environ["GDRIVE_SECRETS_ID"]
-GDRIVE_TOKEN_ID   = os.environ["GDRIVE_TOKEN_ID"]
+GROQ_KEY          = os.environ.get("GROQ_KEY", "")
+PEXELS_KEY        = os.environ.get("PEXELS_KEY", "")
+PIXABAY_KEY       = os.environ.get("PIXABAY_KEY", "")
+GDRIVE_SECRETS_ID = os.environ.get("GDRIVE_SECRETS_ID", "")
+GDRIVE_TOKEN_ID   = os.environ.get("GDRIVE_TOKEN_ID", "")
 GDRIVE_MUSIC_ID   = os.environ.get("GDRIVE_MUSIC_ID", "")
-SHEET_ID          = os.environ["SHEET_ID"]
-LONG_VIDEO_TOPIC  = os.environ.get("LONG_VIDEO_TOPIC", "")
+SHEET_ID          = os.environ.get("SHEET_ID", "")
 CHANNEL_NAME      = "DarkHistoryMind"
 
 SW, SH = 1080, 1920
@@ -83,42 +81,36 @@ def get_font(size):
 # SECTION 1 — EXTENDED SCRIPT (45-50 SECONDS)
 # ═══════════════════════════════════════════════════════════════════════════
 def generate_extended_script(topic):
-    """
-    Generate 200-240 word script for 45-50 second shorts
-    Includes dramatic hook, multiple facts, cliffhanger, and call-to-action
-    """
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
 
-        prompt = f"""Write an EXTREMELY VIRAL YouTube Shorts script for dark history that makes people STOP SCROLLING.
+        prompt = f"""Write an EXTREMELY VIRAL YouTube Shorts script for dark history.
 
 Topic: {topic}
 
-CRITICAL REQUIREMENTS:
-- Total word count: 200-240 words (for 45-50 seconds)
-- First 3 seconds: SHOCKING hook that makes people stop scrolling
-- Include 3-4 different facts building on each other
-- Emotional escalation throughout
-- End with MAJOR revelation or cliffhanger
-- Make it sound like a real person telling a story (NOT AI)
-- Include dramatic pauses and emphasis words
+REQUIREMENTS:
+- 200-240 words (45-50 seconds)
+- First 3 seconds: SHOCKING hook
+- 3-4 facts with emotional escalation
+- End with cliffhanger
+- Sound HUMAN, not AI
+- Include dramatic pauses
 
-Return ONLY valid JSON with these fields:
+Return ONLY valid JSON:
 {{"hook":"","fact1":"","fact2":"","fact3":"","fact4":"","twist":"","cliffhanger":"","full_script":""}}
 
 RULES:
-- hook: Shocking opening statement (12-15 words) - MUST make people stop scrolling
-- fact1: First revelation (35-45 words) - Build intrigue
-- fact2: Deeper truth (35-45 words) - Escalate emotion
-- fact3: Hidden detail (35-45 words) - Add complexity
-- fact4: Dark element (25-35 words) - Increase tension
-- twist: Unexpected turn (20-25 words) - Shock moment
-- cliffhanger: Ending question (15-20 words) - Make them want more
-- full_script: Complete script combining all sections
-- NO labels like "Hook:" in values - JUST the content
+- hook: 12-15 words, shocking
+- fact1: 35-45 words
+- fact2: 35-45 words
+- fact3: 35-45 words
+- fact4: 25-35 words
+- twist: 20-25 words
+- cliffhanger: 15-20 words
+- NO labels in values
 - NO repeated sentences
-- Sound NATURAL and HUMAN-like, not robotic"""
+- NATURAL speech patterns"""
 
         def fetch_parse():
             r = client.chat.completions.create(
@@ -142,21 +134,22 @@ RULES:
             return d
 
         data = fetch_parse()
+        if not data or "full_script" not in data:
+            return None
+            
         wc = len(data["full_script"].split())
 
-        for attempt in range(2):
-            if 190 <= wc <= 250:
-                break
-            log.warning(f"Script word count ({wc}) out of range. Retry {attempt+1}")
+        if not (190 <= wc <= 250):
+            log.warning(f"Script word count ({wc}) out of range, retrying...")
             new_data = fetch_parse()
-            if new_data:
+            if new_data and "full_script" in new_data:
                 data = new_data
                 wc = len(data["full_script"].split())
 
-        log.info(f"✅ Extended script: {wc} words (~{wc*60//130:.0f} seconds)")
+        log.info(f"✅ Extended script: {wc} words")
         return data
     except Exception as e:
-        log.error(f"❌ Extended script generation failed: {e}")
+        log.error(f"❌ Script generation failed: {e}")
         return None
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -174,15 +167,14 @@ def generate_voice(script):
             log.error("❌ No script text")
             return False
 
-        log.info("Generating extended voiceover...")
+        log.info("Generating voiceover...")
         
         async def speak():
-            # Slower rate for dramatic effect (keeps engagement)
             communicate = edge_tts.Communicate(
                 text, 
                 voice="en-GB-ThomasNeural", 
-                rate="-20%",  # 20% slower for dramatic pause effect
-                pitch="-10Hz"  # Slightly lower pitch for authority
+                rate="-20%",
+                pitch="-10Hz"
             )
             await communicate.save("short_voice.mp3")
 
@@ -192,12 +184,10 @@ def generate_voice(script):
             log.error("❌ Voice file not created")
             return False
             
-        log.info("✅ Extended voice: short_voice.mp3")
+        log.info("✅ Voice generated: short_voice.mp3")
         return True
     except Exception as e:
         log.error(f"❌ Voice generation failed: {e}")
-        import traceback
-        log.error(traceback.format_exc())
         return False
 
 def get_voice_duration():
@@ -216,15 +206,9 @@ def get_voice_duration():
         return 0.0
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 3 — CAPTIONS (RETENTION FOCUSED)
+# SECTION 3 — CAPTIONS (FIXED: Start from 0.0s)
 # ═══════════════════════════════════════════════════════════════════════════
 def build_captions(script, dur):
-    """
-    Build captions with retention focus:
-    - Highlight shocking words
-    - Strategic pauses with visuals
-    - Emotional keywords in different colors
-    """
     sections = ["hook", "fact1", "fact2", "fact3", "fact4", "twist", "cliffhanger"]
     texts = [script.get(s, "") for s in sections]
     texts = [t for t in texts if t]
@@ -236,8 +220,8 @@ def build_captions(script, dur):
     curr = 0.0
     
     for idx, text in enumerate(texts):
-        is_hook = idx == 0  # First section is hook
-        is_twist = idx == len(texts) - 2  # Twist section
+        is_hook = idx == 0
+        is_twist = idx == len(texts) - 2
         
         captions.append({
             "text": text.upper(),
@@ -245,52 +229,39 @@ def build_captions(script, dur):
             "end": curr + sec_dur,
             "is_hook": is_hook,
             "is_twist": is_twist,
-            "color": (255, 100, 100) if is_twist else (212, 175, 55)  # Red for twist, gold for others
+            "color": (255, 100, 100) if is_twist else (212, 175, 55)
         })
         curr += sec_dur
     
+    log.info(f"✅ Captions synced: {len(captions)} captions from 0.0s")
     return captions
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 4 — PROFESSIONAL ASSETS (8-10 per short)
+# SECTION 4 — PROFESSIONAL ASSETS
 # ═══════════════════════════════════════════════════════════════════════════
 def fetch_premium_assets(topic, dur):
-    """
-    Fetch 8-10 premium assets (videos + images) for 45-50 second duration
-    Uses multiple search strategies for maximum variety
-    """
     os.makedirs("shorts_assets/videos", exist_ok=True)
     os.makedirs("shorts_assets/images", exist_ok=True)
     
     assets = {"videos": [], "images": []}
     
-    # Dynamic asset count for longer videos
-    num_videos = max(6, int(dur / 5))  # ~5 sec per video
-    num_images = max(4, int(dur / 6))  # ~6 sec per image
+    num_videos = max(6, int(dur / 5))
+    num_images = max(4, int(dur / 6))
     
-    log.info(f"Fetching {num_videos} premium videos + {num_images} premium images")
+    log.info(f"Fetching {num_videos} videos + {num_images} images")
     
-    # Generate premium search queries (multiple angles of same topic)
-    search_strategies = [
-        topic,
-        f"{topic} history",
-        f"{topic} revelation",
-        f"{topic} mystery",
-        f"{topic} truth",
-        f"{topic} dark secret",
-    ]
+    search_strategies = [topic, f"{topic} history", f"{topic} revelation", f"{topic} mystery", f"{topic} truth", f"{topic} dark"]
     
-    # Fetch DIFFERENT videos
     video_count = 0
     for strategy in search_strategies:
         if video_count >= num_videos: break
         
-        url = f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={strategy.replace(' ','+')}&per_page=5&order=trending"
         try:
+            url = f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={strategy.replace(' ','+')}&per_page=5&order=trending"
             r = requests.get(url, timeout=30)
             videos = r.json().get("hits", [])
             
-            for idx, hit in enumerate(videos[:4]):
+            for hit in videos[:4]:
                 if video_count >= num_videos: break
                 try:
                     vurl = hit["videos"]["medium"]["url"]
@@ -299,21 +270,19 @@ def fetch_premium_assets(topic, dur):
                     open(path, "wb").write(video_data)
                     assets["videos"].append(path)
                     video_count += 1
-                    log.info(f"  Video {video_count}/{num_videos}: {strategy[:30]}")
                 except: pass
         except: pass
     
-    # Fetch DIFFERENT images
     image_count = 0
     for strategy in search_strategies:
         if image_count >= num_images: break
         
-        url = f"https://api.pexels.com/v1/search?query={strategy}&per_page=5&orientation=portrait"
         try:
+            url = f"https://api.pexels.com/v1/search?query={strategy}&per_page=5&orientation=portrait"
             r = requests.get(url, headers={"Authorization": PEXELS_KEY}, timeout=30)
             photos = r.json().get("photos", [])
             
-            for idx, photo in enumerate(photos[:3]):
+            for photo in photos[:3]:
                 if image_count >= num_images: break
                 try:
                     path = f"shorts_assets/images/img{image_count}.jpg"
@@ -321,7 +290,6 @@ def fetch_premium_assets(topic, dur):
                     open(path, "wb").write(img_data)
                     assets["images"].append(path)
                     image_count += 1
-                    log.info(f"  Image {image_count}/{num_images}: {strategy[:30]}")
                 except: pass
         except: pass
     
@@ -332,38 +300,24 @@ def fetch_premium_assets(topic, dur):
 # SECTION 5 — PROFESSIONAL CAPTIONS RENDERING
 # ═══════════════════════════════════════════════════════════════════════════
 def render_caption(frame, caption_data, progress):
-    """
-    Render engaging captions with:
-    - Dynamic color changes for emphasis
-    - Text effects for retention
-    - Strategic timing for hooks and twists
-    """
     from PIL import Image, ImageDraw
     img = Image.fromarray(frame)
     draw = ImageDraw.Draw(img)
     
     text = caption_data["text"]
     is_hook = caption_data.get("is_hook", False)
-    is_twist = caption_data.get("is_twist", False)
     color = caption_data.get("color", (212, 175, 55))
     
     font_size = HOOK_SIZE if is_hook else CAPTION_SIZE
     font = get_font(font_size)
     
-    # Dynamic alpha for emphasis
     if is_hook:
-        # Hook fades in quickly
         alpha = int(min(1.0, progress * 4.0) * 255)
-    elif is_twist:
-        # Twist has dramatic entrance
-        alpha = int(min(1.0, progress * 5.0) * 255)
     else:
-        # Normal fade in/out
         alpha = int(min(1.0, progress * 3.0) * 255) if progress < 0.33 else int(min(1.0, (1.0 - progress) * 3.0) * 255)
     
     alpha = max(0, min(255, alpha))
     
-    # Text wrapping
     words = text.split()
     lines = []
     curr_line = ""
@@ -378,9 +332,8 @@ def render_caption(frame, caption_data, progress):
             curr_line = test
     if curr_line:
         lines.append(curr_line)
-    lines = lines[:4]  # Max 4 lines
+    lines = lines[:4]
     
-    # Draw with shadow for professional look
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     o_draw = ImageDraw.Draw(overlay)
     
@@ -394,32 +347,22 @@ def render_caption(frame, caption_data, progress):
         tw = bb[2] - bb[0]
         x_pos = (SW - tw) // 2
         
-        # Professional shadow effect
         for dx in range(-STROKE_W, STROKE_W + 1, 2):
             for dy in range(-STROKE_W, STROKE_W + 1, 2):
                 if dx == 0 and dy == 0: continue
                 o_draw.text((x_pos + dx, y_pos + dy), line, font=font, fill=(0, 0, 0, alpha))
         
-        # Main text with dynamic color
         o_draw.text((x_pos, y_pos), line, font=font, fill=(*color, alpha))
     
     img = Image.alpha_composite(img.convert("RGBA"), overlay)
     return np.array(img.convert("RGB"))
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 6 — PREMIUM VIDEO ASSEMBLY (Professional Editing)
+# SECTION 6 — PREMIUM VIDEO ASSEMBLY
 # ═══════════════════════════════════════════════════════════════════════════
 def apply_premium_effects(frame, t, dur, intensity=1.0):
-    """
-    Apply professional cinematic effects:
-    - Intelligent zoom with curve
-    - Advanced color grading
-    - Vignette with dynamic intensity
-    - Subtle depth of field simulation
-    """
     import cv2
     
-    # Curved zoom (easing function for natural feel)
     progress = t / dur
     ease_progress = progress - math.sin(progress * 2 * math.pi) / (2 * math.pi)
     zoom_factor = 1.0 + (0.2 * ease_progress * intensity)
@@ -430,7 +373,6 @@ def apply_premium_effects(frame, t, dur, intensity=1.0):
     zoom_matrix = cv2.getRotationMatrix2D((center_x, center_y), 0, zoom_factor)
     frame = cv2.warpAffine(frame, zoom_matrix, (w, h), borderMode=cv2.BORDER_REFLECT_101)
     
-    # Advanced vignette with Gaussian blur
     kernel_x = cv2.getGaussianKernel(w, w * 0.4)
     kernel_y = cv2.getGaussianKernel(h, h * 0.4)
     kernel = kernel_y @ kernel_x.T
@@ -440,13 +382,10 @@ def apply_premium_effects(frame, t, dur, intensity=1.0):
     vignette = (frame.astype(float) * (mask.astype(float) / 255)).astype(np.uint8)
     frame = cv2.addWeighted(frame, 0.80, vignette, 0.20, 0)
     
-    # Professional color grading (cinematic dark look)
-    # Boost shadows, slightly cool tones
-    frame[:, :, 0] = np.clip(frame[:, :, 0] * 1.15, 0, 255)  # Blue boost
-    frame[:, :, 1] = np.clip(frame[:, :, 1] * 0.92, 0, 255)  # Green reduce
-    frame[:, :, 2] = np.clip(frame[:, :, 2] * 0.85, 0, 255)  # Red reduce (cooler)
+    frame[:, :, 0] = np.clip(frame[:, :, 0] * 1.15, 0, 255)
+    frame[:, :, 1] = np.clip(frame[:, :, 1] * 0.92, 0, 255)
+    frame[:, :, 2] = np.clip(frame[:, :, 2] * 0.85, 0, 255)
     
-    # Subtle saturation boost for retention
     hsv = cv2.cvtColor(frame.astype(np.uint8), cv2.COLOR_BGR2HSV).astype(float)
     hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.1, 0, 255)
     frame = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
@@ -454,15 +393,9 @@ def apply_premium_effects(frame, t, dur, intensity=1.0):
     return frame.astype(np.uint8)
 
 def assemble_premium_short(assets, captions, dur, out_file):
-    """
-    Professional assembly with:
-    - Intelligent clip transitions
-    - Smart asset pacing
-    - Retention-focused cuts
-    """
     import cv2
     
-    log.info("🎬 Assembling PREMIUM short with professional effects...")
+    log.info("🎬 Assembling premium short...")
     
     temp_video = "temp_video.mp4"
     writer = cv2.VideoWriter(temp_video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (SW, SH))
@@ -471,7 +404,6 @@ def assemble_premium_short(assets, captions, dur, out_file):
     videos = assets.get("videos", [])
     images = assets.get("images", [])
     
-    # Smart pool: More videos than images for dynamic feel
     pool = []
     if videos:
         pool.extend([(v, "video") for v in videos] * 2)
@@ -488,7 +420,6 @@ def assemble_premium_short(assets, captions, dur, out_file):
     transition_duration = 0.4
     transition_frames = int(transition_duration * FPS)
     
-    # Calculate smart pacing based on captions
     caption_cuts = [cap["start"] for cap in captions]
     
     for frame_idx in range(total_frames):
@@ -513,11 +444,9 @@ def assemble_premium_short(assets, captions, dur, out_file):
             
             frame = cv2.resize(frame, (SW, SH))
             
-            # Apply premium effects
             intensity = 1.2 if any(abs(t - cut) < 0.3 for cut in caption_cuts) else 1.0
             frame = apply_premium_effects(frame, t, dur, intensity)
             
-            # Smooth transitions
             if path != last_path and transition_frame is not None:
                 transition_progress = min(1.0, (frame_idx % transition_frames) / transition_frames)
                 frame = cv2.addWeighted(transition_frame, 1.0 - transition_progress, frame, transition_progress, 0)
@@ -525,7 +454,6 @@ def assemble_premium_short(assets, captions, dur, out_file):
             transition_frame = frame.copy()
             last_path = path
             
-            # Render captions
             for cap_data in captions:
                 if cap_data["start"] <= t <= cap_data["end"]:
                     prog = (t - cap_data["start"]) / (cap_data["end"] - cap_data["start"]) if (cap_data["end"] - cap_data["start"]) > 0 else 0.5
@@ -534,7 +462,6 @@ def assemble_premium_short(assets, captions, dur, out_file):
             
             writer.write(frame)
             
-            # Smart clip changes at caption breaks
             if any(abs(t - cut) < 0.1 for cut in caption_cuts):
                 vi += 1
             elif frame_idx > 0 and frame_idx % int(FPS * random.uniform(4, 6)) == 0:
@@ -545,13 +472,12 @@ def assemble_premium_short(assets, captions, dur, out_file):
             writer.write(np.zeros((SH, SW, 3), dtype=np.uint8))
     
     writer.release()
-    log.info(f"✅ Premium video assembled: {temp_video}")
+    log.info(f"✅ Video assembled: {temp_video}")
     
-    # Mix audio
     try:
         from moviepy.editor import VideoFileClip, AudioFileClip
         
-        log.info("🎵 Mixing professional audio...")
+        log.info("🎵 Mixing audio...")
         
         video = VideoFileClip(temp_video)
         audio = AudioFileClip("short_voice.mp3")
@@ -560,10 +486,13 @@ def assemble_premium_short(assets, captions, dur, out_file):
         
         final_video.write_videofile(
             out_file,
+            fps=FPS,
             codec='libx264',
             audio_codec='aac',
+            preset='fast',
             verbose=False,
-            logger=None
+            logger=None,
+            threads=4
         )
         
         video.close()
@@ -571,125 +500,108 @@ def assemble_premium_short(assets, captions, dur, out_file):
         final_video.close()
         
         if os.path.exists(temp_video):
-            os.remove(temp_video)
+            try:
+                os.remove(temp_video)
+            except:
+                pass
         
-        log.info(f"✅ PREMIUM SHORT COMPLETE: {out_file}")
+        log.info(f"✅ Short complete: {out_file}")
         return os.path.exists(out_file)
         
     except Exception as e:
-        log.error(f"❌ Audio mixing failed: {e}")
+        log.error(f"❌ Audio mixing error: {e}")
         if os.path.exists(temp_video):
-            os.rename(temp_video, out_file)
-            log.warning(f"⚠️  Using video without audio")
+            try:
+                os.rename(temp_video, out_file)
+                log.warning(f"⚠️ Using video without audio")
+            except:
+                pass
         return False
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 7 — VIRAL SEO OPTIMIZATION
+# SECTION 7 — VIRAL SEO (1 hashtag title + 15 hashtags description + 20-25 backend)
 # ═══════════════════════════════════════════════════════════════════════════
 def generate_viral_seo(topic, script, hook):
-    """
-    Generate highly optimized SEO that drives viral reach:
-    - Psychological triggers in title
-    - Keyword-rich description
-    - Strategic hashtags
-    - Backend keywords for algorithm
-    """
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
         
-        # Analyze content for viral hooks
-        prompt = f"""You are a YouTube Shorts viral marketing expert.
+        prompt = f"""YouTube Shorts viral SEO expert.
 
 Topic: {topic}
 Hook: {hook}
 Script: {script.get('full_script', '')[:300]}
 
-Create VIRAL SEO package that will maximize reach and engagement:
+Create VIRAL SEO:
 
-Return ONLY valid JSON with NO explanations:
-{{"title":"","description":"","primary_tags":"","hashtags":"","backend_keywords":""}}
+Return ONLY JSON:
+{{"title":"","title_hashtag":"","description":"","hashtags":"","backend_keywords":""}}
 
 RULES:
-- title: 60-70 chars, include emotional trigger word, make people click/tap
-- description: 150-180 chars, compelling, include 2-3 keywords, end with question or call-to-action
-- primary_tags: 3-5 main tags separated by comma (most searchable keywords)
-- hashtags: 15-20 hashtags for viral spread (mix viral+niche)
-- backend_keywords: 20-30 keywords comma-separated for YouTube algorithm (hidden SEO)
+- title: 50-60 chars, NO hashtag
+- title_hashtag: EXACTLY 1 hashtag (most viral)
+- description: 150-180 chars, end with question
+- hashtags: EXACTLY 15 hashtags space-separated
+- backend_keywords: 20-25 keywords comma-separated
 
-Make it VIRAL focused, not generic. Use:
-- Psychological triggers (mysterious, shocking, hidden, truth, etc.)
-- Curiosity gaps (question formats)
-- Emotional words (dark, revealed, haunting, etc.)
-- Search volume keywords
-- Trending words
+Hashtags: #DarkHistory #ShockingTruth #MustWatch #HistoryRevealed #Revealed #HistoryFacts #AncientSecrets #Mystery #Conspiracy #Hidden #Shorts #Viral #YouTube #TrendingNow #FYP
 
-Examples of VIRAL title format:
-"[ADJECTIVE] [NOUN] They [VERB] [OBJECT]... *SHOCKING*"
-"Wait Until You See What Happened To [SUBJECT]"
-"This [NOUN] Will SHOCK YOU (Dark History)"
-
-Examples of VIRAL description:
-"We found [CLAIM] about [TOPIC]. This [ADJECTIVE] truth [VERB]... Watch till the end for the *SHOCKING* revelation. 🎥 #DarkHistory"
-"""
+Backend keywords MUST relate to {topic}"""
         
         r = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.8,
-            max_tokens=800
+            max_tokens=900
         )
         
         raw = r.choices[0].message.content.strip()
         match = re.search(r'\{.*\}', raw, re.DOTALL)
         if not match:
-            log.warning("Could not parse SEO JSON, using defaults")
             return get_default_seo(topic, hook)
         
         seo = json.loads(match.group())
         
-        log.info(f"✅ VIRAL SEO Generated:")
-        log.info(f"   Title: {seo.get('title', '')[:60]}...")
-        log.info(f"   Tags: {seo.get('primary_tags', '')}")
+        hashtags_list = seo.get('hashtags', '').split()
+        if len(hashtags_list) < 15:
+            default_hashtags = "#DarkHistory #HistoryRevealed #ShockingTruth #MustWatch #HistoryFacts #AncientSecrets #Mystery #Conspiracy #Hidden #Shorts #Viral #YouTube #TrendingNow #FYP #Revealed"
+            seo['hashtags'] = ' '.join(default_hashtags.split()[:15])
+        elif len(hashtags_list) > 15:
+            seo['hashtags'] = ' '.join(hashtags_list[:15])
         
+        log.info(f"✅ SEO generated: 1 title hashtag + 15 desc hashtags + {len(seo.get('backend_keywords', '').split(','))} keywords")
         return seo
         
     except Exception as e:
-        log.warning(f"SEO generation failed: {e}, using defaults")
+        log.warning(f"SEO generation failed: {e}")
         return get_default_seo(topic, hook)
 
 def get_default_seo(topic, hook):
-    """Fallback professional SEO"""
-    keywords = topic.split()[:2]
     return {
-        "title": f"{hook} - {topic} | Dark History Revealed",
-        "description": f"Discover the shocking truth about {topic}. What we found will SHOCK you. #DarkHistory #History #MustWatch",
-        "primary_tags": f"{topic}, dark history, history facts",
-        "hashtags": "#DarkHistory #HistoryRevealed #ShockingTruth #MustWatch #HistoryFacts #Conspiracy #Revealed #DarkSecrets #Historical #TruthUncovered #YouTube #Shorts #Viral #Mystery #Ancient",
-        "backend_keywords": f"{topic}, dark history, history facts, shocking truth, hidden history, mysterious, revelation, ancient secrets, conspiracy, historical facts"
+        "title": f"{hook} - {topic[:40]}",
+        "title_hashtag": "#DarkHistory",
+        "description": f"Discover the shocking truth about {topic}. What we found will SHOCK you. 🎥",
+        "hashtags": "#DarkHistory #HistoryRevealed #ShockingTruth #MustWatch #HistoryFacts #AncientSecrets #Mystery #Conspiracy #Hidden #Shorts #Viral #YouTube #TrendingNow #FYP #Revealed",
+        "backend_keywords": f"{topic}, dark history, history facts, shocking truth, hidden history, mysterious, revelation, ancient secrets, conspiracy, historical facts, hidden truth, dark secrets, untold story, forbidden truth, lost history, buried secrets, dark reality, ancient evil, truth exposed, history documentary, revealed secrets, conspiracy theory, hidden knowledge, historical mystery"
     }
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 8 — PROFESSIONAL THUMBNAIL
 # ═══════════════════════════════════════════════════════════════════════════
 def gen_premium_thumbnail(topic, hook):
-    """Premium thumbnail with viral appeal"""
     from PIL import Image, ImageDraw
     
     img = Image.new("RGB", (1080, 1920), color=(12, 4, 8))
     d = ImageDraw.Draw(img)
     
-    # Multiple text layers for dramatic effect
     font_hook = get_font(140)
     font_sub = get_font(60)
     
-    # Main hook
     text = hook.upper()[:30]
     bb = d.textbbox((0, 0), text, font=font_hook)
     tw = bb[2] - bb[0]
     x = (1080 - tw) // 2
     
-    # Outline effect
     for dx in range(-5, 6):
         for dy in range(-5, 6):
             if dx == 0 and dy == 0: continue
@@ -697,7 +609,6 @@ def gen_premium_thumbnail(topic, hook):
     
     d.text((x, 800), text, fill=(255, 80, 80), font=font_hook)
     
-    # Subtitle
     subtitle = "DARK HISTORY"
     d.text((100, 400), subtitle, fill=(212, 175, 55), font=font_sub)
     
@@ -706,14 +617,17 @@ def gen_premium_thumbnail(topic, hook):
     return path
 
 # ═══════════════════════════════════════════════════════════════════════════
-# AUTH & UPLOAD (unchanged from working version)
+# AUTH & UPLOAD
 # ═══════════════════════════════════════════════════════════════════════════
 def setup_auth():
     files = [
-        ("client_secrets.json", os.environ["GDRIVE_SECRETS_ID"]),
-        ("youtube_token.pkl", os.environ["GDRIVE_TOKEN_ID"]),
+        ("client_secrets.json", GDRIVE_SECRETS_ID),
+        ("youtube_token.pkl", GDRIVE_TOKEN_ID),
     ]
     for name, fid in files:
+        if not fid:
+            log.warning(f"⚠️ {name} file ID not set")
+            continue
         if os.path.exists(name): continue
         try:
             url = f"https://drive.google.com/uc?export=download&id={fid}"
@@ -724,25 +638,26 @@ def setup_auth():
         except Exception as e:
             log.warning(f"Auth {name}: {e}")
 
-SLOT_SCHEDULE = {
-    0: {"hour": 18, "minute": 30, "days_ahead": -1, "label": "12:00 AM IST — upload day"},
-    1: {"hour": 0, "minute": 30, "days_ahead": 0, "label": "6:00 AM IST — upload day"},
-    2: {"hour": 6, "minute": 30, "days_ahead": 0, "label": "12:00 PM IST — upload day"},
-    3: {"hour": 18, "minute": 30, "days_ahead": 0, "label": "12:00 AM IST — gap day"},
-    4: {"hour": 0, "minute": 30, "days_ahead": 1, "label": "6:00 AM IST — gap day"},
-    5: {"hour": 6, "minute": 30, "days_ahead": 1, "label": "12:00 PM IST — gap day"},
-    6: {"hour": 12, "minute": 30, "days_ahead": 1, "label": "6:00 PM IST — gap day"},
-}
+# DAILY SCHEDULE: 12 AM, 6 AM, 12 PM, 6 PM IST
+DAILY_SCHEDULE = [
+    {"hour": 18, "minute": 30, "label": "12:00 AM IST"},
+    {"hour": 0, "minute": 30, "label": "6:00 AM IST"},
+    {"hour": 6, "minute": 30, "label": "12:00 PM IST"},
+    {"hour": 12, "minute": 30, "label": "6:00 PM IST"},
+]
 
 def get_schedule(slot):
+    """Get schedule time for slot 0-3"""
     now = datetime.datetime.utcnow()
-    cfg = SLOT_SCHEDULE.get(slot, SLOT_SCHEDULE[0])
+    cfg = DAILY_SCHEDULE[slot % 4]
+    
     base = now.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
-    t = base + datetime.timedelta(days=cfg["days_ahead"])
+    t = base
     if t <= now:
         t += datetime.timedelta(days=1)
+    
     ist = t + datetime.timedelta(hours=5, minutes=30)
-    log.info(f"Slot {slot}: {t.strftime('%Y-%m-%d %H:%M')} UTC = {ist.strftime('%d %b %I:%M %p')} IST")
+    log.info(f"📅 Slot {slot}: {t.strftime('%Y-%m-%d %H:%M')} UTC = {ist.strftime('%d %b %I:%M %p')} IST")
     return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def get_yt():
@@ -758,23 +673,25 @@ def get_yt():
         log.error("❌ YouTube token invalid"); return None
     return build("youtube","v3",credentials=creds,cache_discovery=False)
 
-def upload(video_file, seo, thumbnail, offset=0):
+def upload(video_file, seo, thumbnail, slot=0):
     from googleapiclient.http import MediaFileUpload
     yt = get_yt()
     if not yt: return None, None
-    pub = get_schedule(offset)
+    pub = get_schedule(slot)
     
+    # Title with 1 hashtag
+    title = f"{seo['title']} {seo['title_hashtag']}"
+    
+    # Description with 15 hashtags
     description = f"""{seo['description']}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{seo['hashtags']}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+{seo['hashtags']}"""
     
     body = {
         "snippet": {
-            "title": seo["title"],
-            "description": description,
-            "tags": seo.get("primary_tags", "").split(", "),
+            "title": title[:100],
+            "description": description[:5000],
+            "tags": seo.get("title_hashtag", "").replace("#", "").split(),
             "categoryId": "27",
             "defaultLanguage": "en"
         },
@@ -828,102 +745,55 @@ def update_sheet(topic, url, title, num):
 # ═══════════════════════════════════════════════════════════════════════════
 # TOPIC GENERATION
 # ═══════════════════════════════════════════════════════════════════════════
-def get_related_topics(base, n=7):
+def get_viral_topics(n=4):
+    """Get 4 viral topics for today"""
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
-        prompt = f"""Generate {n} VIRAL dark history topics related to: {base}
-Each topic must be:
-- Surprising/shocking
-- Mysterious
-- Lesser-known facts
-- Engaging for YouTube Shorts
+        
+        prompt = f"""Generate {n} VIRAL dark history topics for YouTube Shorts TODAY.
+Each topic:
+- Shocking/mysterious
+- Lesser-known
+- Engaging
+- Unique (don't repeat)
 
-Return ONLY a JSON array of strings, no explanations.
-Example: ["topic1","topic2",...]"""
+Return ONLY JSON array:
+["topic1","topic2",...]"""
+        
         r = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.95,
-            max_tokens=400
+            max_tokens=500
         )
+        
         raw = r.choices[0].message.content.strip()
         match = re.search(r'\[.*\]', raw, re.DOTALL)
         if match:
             topics = json.loads(match.group())
-            return topics[:n] if len(topics) >= n else topics + [base] * (n - len(topics))
+            return topics[:n] if len(topics) >= n else topics + ["Dark History Mystery"] * (n - len(topics))
     except Exception as e:
-        log.warning(f"Topics failed: {e}")
-    return [base] * n
+        log.warning(f"Topic generation failed: {e}")
+    
+    return ["Dark History Mystery #1", "Dark History Mystery #2", "Dark History Mystery #3", "Dark History Mystery #4"]
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MAIN RUN
+# MAIN PIPELINE: 4 SHORTS PER DAY
 # ═══════════════════════════════════════════════════════════════════════════
-def run_premium_short(topic, num, offset=0):
-    """Create one professional viral short"""
-    log.info(f"\n{'='*60}\n🎬 PREMIUM SHORT #{num}: {topic}\n{'='*60}")
+def run_daily_shorts():
+    """Generate and upload 4 shorts daily"""
+    log.info("="*70)
+    log.info("🚀 DARKHISTORYMIND: DAILY SHORTS PIPELINE (4 SHORTS)")
+    log.info("="*70)
+    log.info(f"📅 {datetime.datetime.now().strftime('%Y-%m-%d')}")
+    log.info("⏰ Posting at: 12 AM, 6 AM, 12 PM, 6 PM IST")
+    log.info("="*70)
     
-    # Step 1: Extended script (200-240 words)
-    script = generate_extended_script(topic)
-    if not script:
-        log.error("❌ Script generation failed")
-        return None
-    
-    # Step 2: Voice (45-50 seconds)
-    if not generate_voice(script):
-        log.error("❌ Voice generation failed")
-        return None
-    
-    dur = get_voice_duration()
-    if dur < 40 or dur > 55:
-        log.warning(f"⚠️  Voice duration {dur:.1f}s is outside optimal range (40-55s)")
-    
-    # Step 3: Captions
-    captions = build_captions(script, dur)
-    
-    # Step 4: Assets
-    assets = fetch_premium_assets(topic, dur)
-    if not assets:
-        log.error("❌ No assets found")
-        return None
-    
-    # Step 5: Assembly
-    safe_topic = re.sub(r'[^\w\s]', '', topic).strip().replace(' ', '_')[:30]
-    out_file = f"short_{num}_{safe_topic}.mp4"
-    
-    success = assemble_premium_short(assets, captions, dur, out_file)
-    if not success or not os.path.exists(out_file):
-        log.error("❌ Assembly failed")
-        return None
-    
-    # Step 6: VIRAL SEO
-    seo = generate_viral_seo(topic, script, script.get("hook", ""))
-    
-    # Step 7: Upload
-    try:
-        thumb = gen_premium_thumbnail(topic, script.get("hook", ""))
-        _, url = upload(out_file, seo, thumb, offset)
-        
-        if url:
-            update_sheet(topic, url, seo["title"], num)
-            log.info(f"\n✅✅✅ SHORT #{num} VIRAL READY: {url}")
-            log.info(f"   Duration: {dur:.1f}s | Title: {seo['title'][:60]}...")
-            return url
-    except Exception as e:
-        log.error(f"❌ Upload failed: {e}")
-    
-    return None
-
-def main():
-    log.info("="*60)
-    log.info("🚀 DARKHISTORYMIND: VIRAL SHORTS PIPELINE (PROFESSIONAL)")
-    log.info("="*60)
-    log.info("Duration: 45-50 seconds | SEO: VIRAL OPTIMIZED | Engagement: MAX")
-    log.info("="*60)
-    
-    if not GROQ_KEY or not PEXELS_KEY:
-        log.error("❌ Missing API Keys")
-        sys.exit(1)
+    if not GROQ_KEY or not PEXELS_KEY or not PIXABAY_KEY:
+        log.error("❌ Missing required API keys!")
+        log.error("   Required: GROQ_KEY, PEXELS_KEY, PIXABAY_KEY")
+        return False
 
     download_fonts()
     setup_auth()
@@ -931,26 +801,86 @@ def main():
     if not os.path.exists("shorts_assets"):
         os.makedirs("shorts_assets")
 
-    base_topic = LONG_VIDEO_TOPIC.strip() or "Darkest Secrets of History"
-    log.info(f"\n📌 Base Topic: {base_topic}\n")
-
-    topics = get_related_topics(base_topic, n=7)
+    # Get 4 topics for today
+    topics = get_viral_topics(n=4)
+    log.info(f"\n📌 Today's Topics:")
+    for i, topic in enumerate(topics, 1):
+        log.info(f"   {i}. {topic}")
+    log.info("")
     
     results = []
-    for i, topic in enumerate(topics, 1):
-        url = run_premium_short(topic, num=i, offset=i-1)
-        results.append(url)
+    for slot, topic in enumerate(topics):
+        log.info(f"\n{'─'*70}")
+        log.info(f"📹 SHORT #{slot+1}: {topic}")
+        log.info(f"{'─'*70}")
         
-        if i < len(topics):
-            log.info("⏳ Waiting 30s before next short...")
-            time.sleep(30)
-
-    log.info("\n" + "="*60)
-    log.info("✅ ALL PREMIUM SHORTS PROCESSED")
-    log.info("="*60)
+        # Generate script
+        script = generate_extended_script(topic)
+        if not script:
+            log.error("❌ Script generation failed")
+            results.append(None)
+            continue
+        
+        # Generate voice
+        if not generate_voice(script):
+            log.error("❌ Voice generation failed")
+            results.append(None)
+            continue
+        
+        # Get duration
+        dur = get_voice_duration()
+        if dur < 40 or dur > 55:
+            log.warning(f"⚠️  Duration {dur:.1f}s outside 40-55s range")
+        
+        # Build captions
+        captions = build_captions(script, dur)
+        
+        # Fetch assets
+        assets = fetch_premium_assets(topic, dur)
+        if not assets:
+            log.error("❌ No assets found")
+            results.append(None)
+            continue
+        
+        # Assemble video
+        safe_topic = re.sub(r'[^\w\s]', '', topic).strip().replace(' ', '_')[:30]
+        out_file = f"short_{slot+1}_{safe_topic}.mp4"
+        
+        success = assemble_premium_short(assets, captions, dur, out_file)
+        if not success or not os.path.exists(out_file):
+            log.error("❌ Assembly failed")
+            results.append(None)
+            continue
+        
+        # Generate SEO
+        seo = generate_viral_seo(topic, script, script.get("hook", ""))
+        
+        # Upload
+        try:
+            thumb = gen_premium_thumbnail(topic, script.get("hook", ""))
+            _, url = upload(out_file, seo, thumb, slot=slot)
+            
+            if url:
+                update_sheet(topic, url, seo["title"], slot+1)
+                log.info(f"\n✅ SHORT #{slot+1} READY")
+                log.info(f"   Duration: {dur:.1f}s")
+                log.info(f"   Title: {seo['title']}")
+                log.info(f"   URL: {url}")
+                results.append(url)
+            else:
+                results.append(None)
+        except Exception as e:
+            log.error(f"❌ Upload failed: {e}")
+            results.append(None)
+    
+    log.info("\n" + "="*70)
+    log.info("✅ DAILY SHORTS PIPELINE COMPLETE")
+    log.info("="*70)
     for i, url in enumerate(results, 1):
-        status = "✅ VIRAL" if url else "❌ FAILED"
+        status = "✅ POSTED" if url else "❌ FAILED"
         log.info(f"Short #{i}: {status}")
+    
+    return all(results)
 
 if __name__ == "__main__":
-    main()
+    run_daily_shorts()
