@@ -1,110 +1,94 @@
-name: DarkHistoryMind Shorts Pipeline
+name: DarkHistoryMind Daily Shorts Pipeline
 
 on:
-  # Auto-triggers after long-form pipeline completes
-  workflow_run:
-    workflows: ["DarkHistoryMind Pipeline"]
-    types: [completed]
-
-  # Manual trigger
-  workflow_dispatch:
-    inputs:
-      long_video_topic:
-        description: "Topic of the long-form video just published"
-        required: false
-        default: ""
+  schedule:
+    # Run every day at 10:00 UTC (3:30 PM IST)
+    # This triggers once per day, generates and uploads 4 shorts
+    - cron: '0 10 * * *'
+  
+  workflow_dispatch:  # Manual trigger backup
 
 jobs:
-  run-shorts:
+  daily-shorts:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-
-    env:
-      GROQ_KEY:          ${{ secrets.GROQ_KEY }}
-      PEXELS_KEY:        ${{ secrets.PEXELS_KEY }}
-      PIXABAY_KEY:       ${{ secrets.PIXABAY_KEY }}
-      GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
-      GDRIVE_TOKEN_ID:   ${{ secrets.GDRIVE_TOKEN_ID }}
-      GDRIVE_MUSIC_ID:   ${{ secrets.GDRIVE_MUSIC_ID }}
-      SHEET_ID:          ${{ secrets.SHEET_ID }}
+    timeout-minutes: 240
 
     steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY/go" "$AGENT_TOOLSDIRECTORY/node"
-          sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
-          docker system prune -af 2>/dev/null || true
-          df -h /
-
       - name: Checkout repository
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v3
 
-      # Extract topic from long-form pipeline log
-      - name: Download long-form pipeline log
-        if: ${{ github.event_name == 'workflow_run' }}
-        uses: actions/download-artifact@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
         with:
-          name: pipeline-log-${{ github.event.workflow_run.run_number }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
-        continue-on-error: true
-
-      - name: Extract topic from log
-        id: extract_topic
-        run: |
-          TOPIC=""
-          if [ -f "pipeline.log" ]; then
-            TOPIC=$(grep "Topic:" pipeline.log | head -1 | sed 's/.*Topic: //' | tr -d '\r\n')
-          fi
-          if [ -z "$TOPIC" ]; then
-            TOPIC="${{ github.event.inputs.long_video_topic }}"
-          fi
-          if [ -z "$TOPIC" ]; then
-            TOPIC="The Dark Truth About Ancient History"
-          fi
-          echo "LONG_VIDEO_TOPIC=$TOPIC" >> $GITHUB_ENV
-          echo "Topic: $TOPIC"
+          python-version: '3.11'
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
-            fontconfig fonts-dejavu-core fonts-liberation
-
-      - name: Install Shorts fonts
-        run: |
-          set +e
-          FONT_DIR="/usr/share/fonts/truetype/custom"
-          sudo mkdir -p "$FONT_DIR"
-          sudo curl -fsSL \
-            "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-ExtraBold.ttf" \
-            -o "$FONT_DIR/Montserrat-ExtraBold.ttf" 2>/dev/null || true
-          sudo curl -fsSL \
-            "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf" \
-            -o "$FONT_DIR/Anton-Regular.ttf" 2>/dev/null || true
-          sudo fc-cache -fv 2>/dev/null || true
-          set -e
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5.6.0
-        with:
-          python-version: "3.11"
-          cache: pip
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 libxrender-dev fonts-liberation
+          sudo fc-cache -fv
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install moviepy groq requests pillow numpy opencv-python edge-tts gspread google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
-      - name: Run Shorts Pipeline
-        run: python shorts_pipeline.py
+      - name: Download credentials from Google Drive
+        env:
+          GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
+          GDRIVE_TOKEN_ID: ${{ secrets.GDRIVE_TOKEN_ID }}
+        run: |
+          python << 'PYTHON_EOF'
+          import requests
+          import os
+          
+          files = [
+              ("client_secrets.json", os.environ.get("GDRIVE_SECRETS_ID", "")),
+              ("youtube_token.pkl", os.environ.get("GDRIVE_TOKEN_ID", "")),
+          ]
+          
+          for name, file_id in files:
+              if not file_id:
+                  print(f"⚠️ {name} file ID not set")
+                  continue
+              url = f"https://drive.google.com/uc?export=download&id={file_id}"
+              try:
+                  r = requests.get(url, timeout=60)
+                  if r.status_code == 200:
+                      with open(name, "wb") as f:
+                          f.write(r.content)
+                      print(f"✅ Downloaded {name}")
+                  else:
+                      print(f"❌ Failed to download {name}: {r.status_code}")
+              except Exception as e:
+                  print(f"❌ Error downloading {name}: {e}")
+          PYTHON_EOF
 
-      - name: Upload log
+      - name: Run Daily Shorts Pipeline
+        env:
+          GROQ_KEY: ${{ secrets.GROQ_KEY }}
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+          PIXABAY_KEY: ${{ secrets.PIXABAY_KEY }}
+          GDRIVE_SECRETS_ID: ${{ secrets.GDRIVE_SECRETS_ID }}
+          GDRIVE_TOKEN_ID: ${{ secrets.GDRIVE_TOKEN_ID }}
+          GDRIVE_MUSIC_ID: ${{ secrets.GDRIVE_MUSIC_ID }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          python shorts_pipeline.py
+
+      - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v3
         with:
-          name: shorts-log-${{ github.run_number }}
+          name: daily-shorts-logs-${{ github.run_number }}
           path: shorts_pipeline.log
-          retention-days: 7
+          retention-days: 30
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "❌ Pipeline failed!"
+          if [ -f shorts_pipeline.log ]; then
+            echo "--- Last 150 lines of log ---"
+            tail -150 shorts_pipeline.log
+          fi
