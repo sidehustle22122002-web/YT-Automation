@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v4
@@ -76,11 +76,19 @@ jobs:
         run: |
           python shorts_pipeline.py
 
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v3
+      - name: Upload logs on success
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: daily-shorts-logs-${{ github.run_number }}
+          name: daily-shorts-logs-success-${{ github.run_number }}
+          path: shorts_pipeline.log
+          retention-days: 7
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-shorts-logs-failed-${{ github.run_number }}
           path: shorts_pipeline.log
           retention-days: 30
 
@@ -89,6 +97,7 @@ jobs:
         run: |
           echo "❌ Pipeline failed!"
           if [ -f shorts_pipeline.log ]; then
-            echo "--- Last 150 lines of log ---"
+            echo ""
+            echo "--- LAST 150 LINES OF LOG ---"
             tail -150 shorts_pipeline.log
           fi
